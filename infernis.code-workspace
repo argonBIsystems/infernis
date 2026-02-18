@@ -1,0 +1,28 @@
+{
+  "folders": [
+    {
+      "path": ".",
+      "name": "INFERNIS (private)"
+    }
+  ],
+  "settings": {
+    "python.defaultInterpreterPath": ".venv/bin/python",
+    "files.exclude": {
+      "**/__pycache__": true,
+      "**/.pytest_cache": true,
+      "**/*.egg-info": true
+    },
+    "python.analysis.extraPaths": ["src"],
+    "editor.formatOnSave": true,
+    "[python]": {
+      "editor.defaultFormatter": "charliermarsh.ruff"
+    }
+  },
+  "extensions": {
+    "recommendations": [
+      "ms-python.python",
+      "charliermarsh.ruff",
+      "ms-python.vscode-pylance"
+    ]
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "cv": {
+    "auc_roc_mean": 0.9419535010384618,
+    "auc_roc_std": 0.0012276403034259121,
+    "avg_precision_mean": 0.6291926788726453,
+    "avg_precision_std": 0.004452395449121097,
+    "brier_score_mean": 0.09235937933389275,
+    "brier_score_std": 0.0004743870866251035,
+    "log_loss_mean": 0.27595734311517395,
+    "log_loss_std": 0.0013081293227291037
+  },
+  "test": {
+    "auc_roc": 0.9455060154792364,
+    "avg_precision": 0.6450343933893474,
+    "brier_score": 0.04837684998424786,
+    "log_loss": 0.15768653607238603
+  },
+  "data": {
+    "total_samples": 1139112,
+    "positive_samples": 100552,
+    "negative_samples": 1038560,
+    "n_features": 24
+  }
+}
