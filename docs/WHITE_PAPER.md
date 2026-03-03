@@ -36,9 +36,15 @@ The gap between what the science makes possible and what the operational systems
 
 INFERNIS is a machine learning-powered fire prediction engine designed specifically for British Columbia. It operates as a daily batch prediction system, ingesting data each afternoon after noon weather observations are finalized, and producing grid-level fire occurrence probabilities and danger classifications that are served via a REST API.
 
-The architecture employs a hybrid ensemble approach. An XGBoost gradient-boosted classifier serves as the primary occurrence prediction model, trained on approximately 298,000 labeled samples (27,146 positive, 271,460 negative at a 10:1 ratio with spatiotemporal buffering) spanning ten fire seasons (2015--2024) and incorporating 28 engineered features drawn from weather reanalysis, FWI components, multi-depth soil moisture, vegetation indices, topographic derivatives, infrastructure proximity, and lightning detection. In cross-validated evaluation on 1km grid data, the XGBoost model achieves an AUC-ROC of 0.974 -- meaning it correctly ranks fire-prone conditions above non-fire conditions 97.4% of the time. A FireUNet convolutional neural network (31M parameters) operates in parallel, processing 12-channel spatial inputs across a 256x512 raster grid to generate continuous risk heatmaps that capture landscape-scale fire spread patterns and spatial autocorrelation that point-based models miss, achieving an AUC-ROC of 0.815. The Risk Fuser combines both model outputs in logit space with per-zone calibration coefficients independently tuned for each of BC's 14 biogeoclimatic (BEC) zones, producing a final composite risk score for each grid cell.
+The architecture employs a hybrid ensemble approach:
 
-Beyond current-day predictions, INFERNIS produces multi-day fire risk forecasts by ingesting numerical weather prediction (NWP) data from Environment and Climate Change Canada. High-Resolution Deterministic Prediction System (HRDPS) forecasts at 2.5km resolution drive the first two forecast days, while Global Deterministic Prediction System (GDPS) data extends predictions out to 10 days. FWI moisture codes are rolled forward day-by-day using forecast weather, maintaining physical consistency across the forecast horizon. A confidence decay factor attenuates predictions at longer lead times to transparently communicate increasing uncertainty.
+- **FIRE CORE:** An XGBoost gradient-boosted classifier trained on approximately 298,000 labeled samples spanning ten fire seasons (2015--2024), incorporating 28 engineered features. In cross-validated evaluation on 1km grid data, it achieves an AUC-ROC of 0.974 with a Brier score of 0.036.
+
+- **HEATMAP ENGINE:** A FireUNet convolutional neural network (~31M parameters) that processes 12-channel spatial inputs across a 256x512 raster grid, generating continuous risk heatmaps that capture landscape-scale spatial patterns the cell-independent XGBoost model cannot represent (AUC-ROC 0.815).
+
+- **RISK FUSER:** Combines both model outputs in logit space with calibration coefficients independently tuned for each of BC's 14 biogeoclimatic (BEC) zones, producing a final composite risk score mapped to a six-level danger classification.
+
+- **FORECAST ENGINE:** Extends predictions up to 10 days ahead using HRDPS weather forecasts (days 1--2, 2.5km resolution) and GDPS forecasts (days 3--10, 15km resolution) from Environment and Climate Change Canada, with FWI moisture codes rolled forward day-by-day and a confidence decay factor to reflect increasing forecast uncertainty.
 
 All data sources are open and freely available from Canadian federal agencies, provincial data portals, and international scientific repositories. INFERNIS requires no proprietary data subscriptions. Google Earth Engine is used under its non-commercial license for satellite data access during development, with a plan to transition to a commercial license once revenue is generated. The system is designed for full automation: once configured, the daily pipeline runs without human intervention, from data retrieval through model inference to API delivery.
 
@@ -54,23 +60,30 @@ At the base tier, three moisture codes track fuel drying at different time scale
 
 The intermediate tier combines these moisture codes into two compound indices. The Initial Spread Index (ISI) merges FFMC with wind speed to estimate the expected rate of fire spread. The Buildup Index (BUI) combines DMC and DC to represent the total fuel available for combustion.
 
-At the top tier, the Fire Weather Index (FWI) integrates ISI and BUI into a single numeric rating of fire intensity. INFERNIS uses all six FWI components as engineered features in its ML models, preserving the decades of fire science encoded in their formulations while allowing the machine learning layer to discover nonlinear interactions and threshold effects that the linear FWI aggregation cannot capture.
+At the top tier, the Fire Weather Index (FWI) integrates ISI and BUI into a single numeric rating of fire intensity. INFERNIS uses all six FWI components as engineered features, preserving the decades of fire science encoded in their formulations while allowing the machine learning layer to discover nonlinear interactions and threshold effects that the linear FWI aggregation cannot capture.
 
-### Machine Learning Enhancement
+### Feature Engineering
 
-Beyond the classical FWI features, INFERNIS incorporates modern data sources that were unavailable when the CFFDRS was designed. Satellite-derived vegetation indices (NDVI, LAI) from MODIS and Sentinel-2 provide direct observation of fuel condition, canopy structure, and vegetation stress. ERA5 reanalysis provides gridded, gap-free precipitation and evapotranspiration measurements alongside soil moisture at four depths spanning from the surface through to deep soil layers. High-resolution topographic features derived from the Canadian Digital Elevation Model (CDEM) -- elevation, slope, aspect, and hillshade -- encode terrain characteristics that influence fire behavior at the landscape scale. Distance to the nearest road, derived from the BC Digital Road Atlas, captures human-wildland interface proximity, a key factor in both ignition likelihood and suppression access. Lightning detection from the Canadian Lightning Detection Network (CLDN) captures the primary natural ignition source -- lightning is responsible for roughly 60% of BC wildfire ignitions [2] and, as in the rest of Canada, for the majority of the total area burned [3].
+Beyond the classical FWI features, INFERNIS incorporates modern data sources that were unavailable when the CFFDRS was designed. The complete 28-feature vector per grid cell per day comprises:
 
-The complete 28-feature vector per grid cell per day comprises: 6 FWI components (FFMC, DMC, DC, ISI, BUI, FWI), 10 weather variables (temperature, relative humidity, wind speed, wind direction, 24h precipitation, soil moisture at four depths, evapotranspiration), 3 vegetation indices (NDVI, snow cover fraction, LAI), 5 topographic and infrastructure features (elevation, slope, aspect, hillshade, distance to nearest road), 2 temporal encodings (day-of-year sine and cosine), and 2 lightning features (24h and 72h flash density).
+- **6 FWI components:** FFMC, DMC, DC, ISI, BUI, FWI
+- **10 weather variables:** temperature, relative humidity, wind speed, wind direction, 24h precipitation, soil moisture at four depths (0--7cm, 7--28cm, 28--100cm, 100--289cm), evapotranspiration
+- **3 vegetation indices:** NDVI, snow cover fraction, LAI
+- **5 topographic and infrastructure features:** elevation, slope, aspect, hillshade, distance to nearest road
+- **2 temporal encodings:** day-of-year sine and cosine
+- **2 lightning features:** 24h and 72h flash density
+
+Satellite-derived vegetation indices from MODIS and Sentinel-2 provide direct observation of fuel condition and vegetation stress. ERA5 reanalysis provides gridded, gap-free weather and soil moisture at four depths. Topographic features are derived from the Canadian Digital Elevation Model (CDEM). Distance to the nearest road, from the BC Digital Road Atlas, captures human-wildland interface proximity. Lightning detection from the Canadian Lightning Detection Network (CLDN) captures the primary natural ignition source -- lightning is responsible for roughly 60% of BC wildfire ignitions [2] and, as in the rest of Canada, for the majority of the total area burned [3].
 
 ### Training Data Construction
 
 Labels are derived from the Canadian National Fire Database (CNFDB) point-of-origin records and BC Wildfire Service perimeter data. A grid cell is labeled positive for a given day if a fire ignition point falls within its 1km cell boundary during that day. Negative samples are drawn from fire-free cells with spatiotemporal exclusion: negatives must be at least 10km and 7 days from any fire event, preventing contamination from near-miss conditions that are functionally fire-prone. The negative-to-positive ratio is 10:1 (271,460 negatives to 27,146 positives in the 1km training set), sampled with stratification across years and BEC zones to prevent temporal or geographic bias from dominating the training signal.
 
-This label construction means that INFERNIS predicts fire occurrence conditions at the grid cell level. The spatiotemporal exclusion zone around positives (10km/7-day buffer on negatives) serves as a data leakage prevention mechanism: by excluding near-fire cells from the negative pool, the model cannot learn trivially from spatial autocorrelation of adjacent fire/non-fire cells.
+This spatiotemporal exclusion zone serves as a data leakage prevention mechanism: by excluding near-fire cells from the negative pool, the model cannot learn trivially from spatial autocorrelation of adjacent fire/non-fire cells.
 
 ### Empirical Feature Importance
 
-Training on the 1km grid across ten BC fire seasons with the full 28-feature vector reveals the following feature importance ranking by mean |SHAP value|:
+Training on the 1km grid across ten BC fire seasons reveals the following feature importance ranking by mean |SHAP value|:
 
 | Rank | Feature | Mean |SHAP| | Category |
 |------|---------|------------|----------|
@@ -84,11 +97,13 @@ Training on the 1km grid across ten BC fire seasons with the full 28-feature vec
 | 8 | Temperature | 0.31 | Weather |
 | 9 | Wind speed | 0.28 | Weather |
 
-Vegetation condition (NDVI) remains the single most important predictor. Elevation ranks second, demonstrating that topographic context materially improves prediction at 1km resolution. Three FWI components (DMC, DC, FFMC) appear in the top nine, confirming the value of the classical fire weather indices as ML features. Soil moisture ranks fifth, capturing landscape-level dryness that integrates weeks of precipitation and evapotranspiration history.
+Vegetation condition (NDVI) is the single most important predictor. Elevation ranks second, demonstrating that topographic context materially improves prediction at 1km resolution. Three FWI components (DMC, DC, FFMC) appear in the top nine, confirming the value of the classical fire weather indices as ML features. Soil moisture ranks fifth, capturing landscape-level dryness that integrates weeks of precipitation and evapotranspiration history.
 
-### Research Validation
+Several features contribute zero marginal SHAP value: 24-hour precipitation, evapotranspiration, slope, aspect, hillshade, and both lightning density features. Their information appears captured by correlated features (e.g., precipitation effects absorbed by FWI moisture codes; slope/aspect absorbed by elevation). The zero lightning SHAP is notable given lightning's role as the dominant natural ignition source -- this likely reflects limitations in available lightning data resolution or temporal alignment rather than the irrelevance of lightning as a fire driver. XGBoost's native gain-based importance does assign non-zero values to these features, indicating they contribute to some splits but not materially to overall prediction quality.
 
-The approach is validated by a growing body of peer-reviewed research. Recent machine learning studies on regional wildfire prediction using gradient-boosted models with ERA5 and FWI feature sets report AUCs in the 0.8--0.9 range, depending on region, task definition, and evaluation protocol. The BCWildfire benchmark dataset [1], which evaluates deep learning models at 1km resolution across British Columbia, reports that recent architectures (e.g., S-Mamba) achieve F1 scores above 0.85 and PR-AUC close to 0.95 in boreal wildfire risk prediction.
+### Validation
+
+The approach is validated by a growing body of peer-reviewed research. Recent machine learning studies on regional wildfire prediction using gradient-boosted models with ERA5 and FWI feature sets report AUCs in the 0.8--0.9 range. The BCWildfire benchmark dataset [1], which evaluates deep learning models at 1km resolution across British Columbia, reports that recent architectures achieve F1 scores above 0.85 and PR-AUC close to 0.95.
 
 INFERNIS achieves an AUC-ROC of 0.974 and average precision of 0.794 in 5-fold stratified cross-validation on its 1km, 10-year training corpus, with a Brier score of 0.036 indicating well-calibrated probability outputs. Walk-forward temporal backtesting (training on years [2015, test_year-1], testing on test_year) yields AUC-ROC values of 0.90--0.93 across six held-out fire seasons (2019--2024), confirming that model performance generalizes across years and is not an artifact of random cross-validation splits.
 
@@ -100,19 +115,21 @@ INFERNIS draws from 21 open data sources spanning eight major categories. A comp
 
 **Historical Fires.** The Canadian National Fire Database (CNFDB) provides point-of-origin records for fires dating back decades. BC Wildfire Service perimeter data supplies polygon boundaries for all significant fires, enabling both point-based classification training and spatial burn-area modeling.
 
-**Weather.** ERA5 reanalysis from the European Centre for Medium-Range Weather Forecasts (ECMWF) serves as the primary weather backbone. ERA5 provides hourly, gridded, gap-free atmospheric variables at approximately 31km native resolution, globally, from 1940 to present with a five-day lag. INFERNIS ingests 2m temperature, dewpoint, 10m wind components, total precipitation, potential evapotranspiration, and soil moisture at multiple depths. Precipitation and evapotranspiration rank among the top 10 most important predictive features, confirming the value of ERA5 variables beyond what the classical FWI system incorporates.
+**Weather.** ERA5 reanalysis from the European Centre for Medium-Range Weather Forecasts (ECMWF) provides hourly, gridded, gap-free atmospheric variables at approximately 31km native resolution, globally, from 1940 to present with a five-day lag. INFERNIS ingests 2m temperature, dewpoint, 10m wind components, total precipitation, and potential evapotranspiration.
 
 **Satellite Imagery.** MODIS and Sentinel-2 imagery, accessed via Google Earth Engine, provides vegetation indices (NDVI), active fire detections (MODIS Thermal Anomalies), and burn severity assessments.
 
-**Soil Moisture.** ERA5-Land soil moisture layers at four depth levels (0--7cm, 7--28cm, 28--100cm, 100--289cm) provide gridded subsurface water content critical for predicting deep organic fuel drying. All four layers are ingested as model features, capturing moisture gradients from surface litter through to deep root zones.
+**Soil Moisture.** ERA5-Land soil moisture layers at four depth levels (0--7cm, 7--28cm, 28--100cm, 100--289cm) provide gridded subsurface water content critical for predicting deep organic fuel drying.
 
 **Vegetation and Fuel.** NDVI and Leaf Area Index (LAI) time series characterize vegetation phenology, canopy density, and stress. CFFDRS Fuel Behaviour Prediction (FBP) system fuel type maps classify the landscape into standardized fuel categories.
 
-**Topography.** The Canadian Digital Elevation Model (CDEM) at approximately 23m resolution provides elevation, from which slope gradient, aspect angle, and hillshade illumination index are derived via numerical gradient computation. Elevation ranks as the 2nd most important feature in the trained 1km model (mean |SHAP| = 1.03), demonstrating that topographic context is a critical contributor to fire prediction.
+**Topography.** The Canadian Digital Elevation Model (CDEM) at approximately 23m resolution provides elevation, from which slope gradient, aspect angle, and hillshade illumination index are derived.
 
-**Infrastructure.** The BC Digital Road Atlas provides road network geometry used to compute distance-to-nearest-road for each grid cell, capturing human-wildland interface proximity relevant to both ignition probability and suppression accessibility.
+**Infrastructure.** The BC Digital Road Atlas provides road network geometry used to compute distance-to-nearest-road for each grid cell.
 
-**Lightning.** The Canadian Lightning Detection Network (CLDN) provides lightning strike locations and polarity, as lightning is responsible for roughly 60% of BC wildfire ignitions [2] and, as in the rest of Canada, for the majority of the total area burned [3].
+**Lightning.** The Canadian Lightning Detection Network (CLDN) provides lightning strike locations and polarity.
+
+**Forecast Weather.** HRDPS (2.5km resolution, 48h horizon) and GDPS (15km resolution, 240h horizon) numerical weather predictions from Environment and Climate Change Canada drive the multi-day forecast pipeline.
 
 All data is sourced from Canadian federal agencies, the Government of British Columbia, ECMWF, NASA, and ESA. No proprietary data subscriptions are required.
 
@@ -122,19 +139,19 @@ All data is sourced from Canadian federal agencies, the Government of British Co
 
 INFERNIS is organized into six core subsystems that execute as a coordinated daily pipeline.
 
-**DATA FORGE** is the automated ingestion layer. It retrieves, validates, and standardizes data from all sources on a daily schedule, handling format conversions, coordinate reprojection, temporal alignment, and quality control. Data Forge maintains a local mirror of key datasets and performs incremental updates to minimize bandwidth and processing time.
+**DATA FORGE** is the automated ingestion layer. It retrieves, validates, and standardizes data from all 21 sources on a daily schedule, handling format conversions, coordinate reprojection, temporal alignment, and quality control. Data Forge maintains a local mirror of key datasets and performs incremental updates to minimize bandwidth and processing time.
 
-**FIRE CORE** is the primary prediction engine, built on XGBoost. It operates on a structured 28-feature matrix with one row per grid cell per day, incorporating FWI components, weather variables, multi-depth soil moisture, vegetation indices, topographic features, infrastructure proximity, lightning activity, and temporal encodings. Trained on approximately 298,000 labeled samples (10:1 negative-to-positive ratio with spatiotemporal buffering) spanning 2015--2024 at 1km resolution, the model achieves an AUC-ROC of 0.974 and a Brier score of 0.036 in cross-validated evaluation, producing well-calibrated occurrence probabilities.
+**FIRE CORE** is the primary prediction engine. It operates on the structured 28-feature matrix with one row per grid cell per day. The XGBoost model produces well-calibrated occurrence probabilities for each of the 2,113,524 cells in the 1km grid.
 
-**HEATMAP ENGINE** employs a FireUNet convolutional neural network (31M parameters) that processes 12-channel spatial inputs at 256x512 pixel resolution -- stacked grids of weather, moisture, vegetation, and topography covering the full BC extent -- to generate continuous spatial risk surfaces. The CNN captures landscape-scale patterns, spatial gradients, and neighborhood effects that the cell-independent XGBoost model cannot represent.
+**HEATMAP ENGINE** processes 12-channel spatial inputs covering the full BC extent to generate continuous spatial risk surfaces. The CNN captures landscape-scale patterns, spatial gradients, and neighborhood effects that the cell-independent XGBoost model cannot represent.
 
-**RISK FUSER** combines outputs from FIRE CORE and HEATMAP ENGINE using a weighted ensemble operating in logit space with regional calibration. Calibration coefficients are fitted independently for each of BC's 14 biogeoclimatic (BEC) zones via logistic regression, accounting for dramatically different fire regimes, fuel types, and climate characteristics. The fuser transforms model outputs to logit space, applies zone-specific linear calibration, and maps the resulting probabilities to a six-level danger classification. In current calibration, XGBoost dominates the ensemble weighting across most zones -- the CNN spatial risk component receives minimal weight in the logistic regression fit, indicating that the cell-level XGBoost predictions already capture most of the predictive signal at 1km resolution. The CNN architecture remains in the pipeline as an active component; future work on higher-resolution spatial inputs and more expressive CNN training may unlock additional ensemble value.
+**RISK FUSER** combines outputs from FIRE CORE and HEATMAP ENGINE in logit space with per-BEC-zone calibration. The fuser applies zone-specific linear calibration and maps the resulting probabilities to a six-level danger classification (VERY_LOW through EXTREME). In current calibration, XGBoost dominates the ensemble weighting -- the CNN receives minimal weight across most zones, indicating that cell-level predictions already capture most of the predictive signal at 1km resolution. The CNN architecture remains as an active pipeline component; future work on higher-resolution inputs and training may unlock additional ensemble value.
 
-**FORECAST ENGINE** extends predictions beyond the current day by combining high-resolution HRDPS weather forecasts (days 1--2, 2.5km resolution from Environment and Climate Change Canada) with global GDPS forecasts (days 3--10, 15km resolution). The engine rolls forward FWI moisture codes day-by-day using forecast weather, builds the full 28-feature matrix for each lead day, and applies the XGBoost model to produce multi-day fire risk trajectories. A confidence decay factor (default 0.95 per lead day) attenuates predictions at longer lead times to reflect increasing forecast uncertainty. Forecast weather is bilinearly interpolated from the native NWP grid to the INFERNIS prediction grid using scipy's RegularGridInterpolator.
+**FORECAST ENGINE** rolls FWI moisture codes forward day-by-day using NWP weather, builds the full feature matrix for each lead day, and applies the XGBoost model to produce multi-day risk trajectories. A confidence decay factor (default 0.95 per lead day) attenuates predictions at longer lead times. Forecast weather is bilinearly interpolated from the native NWP grid to the prediction grid.
 
-**REST API** serves pre-computed daily predictions and multi-day forecasts via a FastAPI application. Consumers can query fire risk by geographic coordinates, grid cell identifiers, or bounding boxes, receiving JSON responses containing occurrence probabilities, danger classifications, contributing factor breakdowns, and up to 10 days of forecast trajectories with per-day confidence scores and data source attribution (HRDPS or GDPS).
+**REST API** serves pre-computed daily predictions and multi-day forecasts via FastAPI. Consumers can query fire risk by geographic coordinates, grid cell identifiers, or bounding boxes, receiving JSON responses with occurrence probabilities, danger classifications, contributing factor breakdowns, and forecast trajectories with per-day confidence scores and data source attribution.
 
-The full pipeline executes daily at 14:00 Pacific Time, after noon weather observations have been incorporated into data feeds. The daily pipeline produces current-day predictions; the forecast pipeline runs immediately afterward, generating multi-day risk trajectories for all grid cells.
+The full pipeline executes daily at 14:00 Pacific Time, after noon weather observations have been incorporated into data feeds.
 
 ---
 
@@ -142,9 +159,7 @@ The full pipeline executes daily at 14:00 Pacific Time, after noon weather obser
 
 INFERNIS assigns each grid cell a composite risk score mapped to a six-level danger classification system: VERY_LOW, LOW, MODERATE, HIGH, VERY_HIGH, and EXTREME. This classification aligns with the familiar CFFDRS danger scale while incorporating ML-derived probability refinement.
 
-Raw model outputs undergo probability calibration via Platt scaling (logistic regression on a held-out calibration set) to ensure that a predicted probability of 0.30 corresponds to an actual observed fire frequency of approximately 30% in similar conditions. This calibration is performed independently for each BEC zone to account for the dramatically different baseline fire rates across the province -- the Coastal Western Hemlock zone has a fundamentally different fire regime than the Interior Douglas-fir or Boreal White and Black Spruce zones.
-
-The composite score integrates calibrated model outputs weighted by zone-specific coefficients determined through logistic regression on historical data. In the current 1km calibration, XGBoost probability dominates the composite (see Limitations and Uncertainties). Danger class thresholds are set to optimize the tradeoff between false alarm rate and detection probability, with higher sensitivity in zones protecting communities and critical infrastructure.
+Raw model outputs undergo probability calibration via Platt scaling (logistic regression on a held-out calibration set) to ensure that a predicted probability of 0.30 corresponds to an actual observed fire frequency of approximately 30% in similar conditions. This calibration is performed independently for each BEC zone to account for dramatically different baseline fire rates across the province -- the Coastal Western Hemlock zone has a fundamentally different fire regime than the Interior Douglas-fir or Boreal White and Black Spruce zones. Danger class thresholds are set to optimize the tradeoff between false alarm rate and detection probability, with higher sensitivity in zones protecting communities and critical infrastructure.
 
 ---
 
@@ -179,37 +194,32 @@ INFERNIS occupies a distinct position: BC-specific optimization with per-BEC-zon
 
 ## Roadmap
 
-**Phase 1 -- MVP (Complete).** XGBoost occurrence prediction on a 5km grid covering 84,535 cells across all of British Columbia. 24-feature model trained on 10 years of data. Core REST API with geographic query support. Firebase-authenticated self-service dashboard with API key provisioning, usage tracking, and tiered access. Automated daily prediction pipeline from data ingestion through model inference to API delivery.
+**Phase 1 -- MVP (Complete).** XGBoost occurrence prediction on a 5km grid (84,535 cells). 24-feature model trained on 10 years of data. Core REST API with geographic query support. Firebase-authenticated self-service dashboard with API key provisioning, usage tracking, and tiered access. Automated daily prediction pipeline.
 
-**Phase 2 -- Spatial Intelligence (Complete).** FireUNet CNN (31M parameters) generating continuous spatial risk heatmaps from 12-channel raster inputs. Per-BEC-zone calibration via logistic regression in logit space across all 14 biogeoclimatic zones. Risk Fuser ensemble combining XGBoost point predictions with CNN spatial context in a weighted logit-space architecture. Feature set expanded from 24 to 28 features: four-depth soil moisture profiles (ERA5-Land), leaf area index (LAI), distance-to-nearest-road (BC Digital Road Atlas), and enhanced vegetation indices.
+**Phase 2 -- Spatial Intelligence (Complete).** FireUNet CNN generating continuous spatial risk heatmaps. Per-BEC-zone calibration via logistic regression across all 14 zones. Risk Fuser ensemble combining XGBoost and CNN outputs in logit space. Feature set expanded from 24 to 28 features with four-depth soil moisture, LAI, and distance-to-road.
 
-**Phase 3 -- High Resolution & Forecasting (Complete).** 1km grid generator producing 2,113,524 cells in BC Albers (EPSG:3005) projection with vectorized BEC zone assignment via spatial join. Multi-day forecast pipeline combining HRDPS (days 1--2) and GDPS (days 3--10) NWP data with FWI roll-forward for up to 10-day fire risk trajectories, with confidence decay and per-cell forecast storage. Vectorized data processing pipeline: raster sampling via numpy fancy indexing and ERA5 interpolation via scipy RegularGridInterpolator, enabling efficient feature computation at 2M-cell scale. Chunked parquet output (weekly chunks) with float16 storage for managing multi-gigabyte feature matrices. Walk-forward historical backtesting framework with temporal cross-validation (AUC 0.90--0.93 across 2019--2024), per-BEC-zone accuracy breakdowns, and model comparison tooling. End-to-end 1km retraining pipeline composing feature processing, XGBoost training (AUC 0.974), BEC calibration (14 zones), and CNN training (AUC 0.815, 24 epochs on Apple MPS) into a single script.
+**Phase 3 -- High Resolution & Forecasting (Complete).** 1km grid (2,113,524 cells) with vectorized BEC zone assignment. Multi-day forecast pipeline (HRDPS + GDPS) with FWI roll-forward and confidence decay. Vectorized data processing for efficient computation at 2M-cell scale. Walk-forward historical backtesting framework with temporal cross-validation and per-BEC-zone breakdowns. End-to-end 1km retraining pipeline.
 
 ---
 
 ## Technical Specifications
 
-| Component | Technology |
-|-----------|------------|
+| Component | Specification |
+|-----------|--------------|
 | Language | Python 3.11+ |
 | API Framework | FastAPI |
-| Primary ML Model | XGBoost |
-| Spatial ML Model | PyTorch (U-Net) |
-| Database | PostgreSQL with PostGIS |
+| Primary ML Model | XGBoost (AUC-ROC 0.974, Brier 0.036, AP 0.794) |
+| Spatial ML Model | PyTorch FireUNet (~31M params, 12 channels, 256x512 raster, AUC 0.815) |
+| Database | PostgreSQL 16+ with PostGIS 3.4 |
 | Cache Layer | Redis |
 | Satellite Data Access | Google Earth Engine |
 | Deployment | Railway |
-| Grid Resolution | 1km (primary), 5km (legacy) |
-| Grid Coverage | 2,113,524 cells at 1km; 84,535 cells at 5km |
-| Forecast Horizon | Up to 10 days (HRDPS days 1--2, GDPS days 3--10) |
-| Backtesting | Walk-forward temporal CV (AUC 0.90--0.93), per-BEC-zone breakdowns |
-| Training Corpus | 298,606 labeled samples (10:1 neg ratio), 2015--2024 |
+| Grid Resolution | 1km (2,113,524 cells), 5km legacy (84,535 cells) |
 | Model Features | 28 (6 FWI + 10 weather + 3 vegetation + 5 topo/infrastructure + 2 temporal + 2 lightning) |
-| CNN Architecture | FireUNet, 12 input channels, ~31M parameters, 256x512 raster, AUC 0.815 |
+| Training Corpus | 298,606 labeled samples (10:1 neg:pos ratio), 2015--2024 |
 | Regional Calibration | Per-BEC-zone logistic regression across 14 zones |
-| XGBoost AUC-ROC | 0.974 |
-| Average Precision | 0.794 |
-| Brier Score | 0.036 |
+| Forecast Horizon | Up to 10 days (HRDPS days 1--2, GDPS days 3--10) |
+| Backtesting | Walk-forward temporal CV (AUC 0.90--0.93 across 2019--2024) |
 | Authentication | Firebase Auth (Google + email/password) |
 | Prediction Frequency | Daily at 14:00 PT + 10-day forecast |
 | API Format | REST/JSON |
@@ -218,17 +228,15 @@ INFERNIS occupies a distinct position: BC-specific optimization with per-BEC-zon
 
 ## Limitations and Uncertainties
 
-INFERNIS is a research-grade system transitioning toward operational deployment. The following limitations should inform interpretation of its outputs and assessment of its current capabilities.
+INFERNIS is a research-grade system transitioning toward operational deployment. The following limitations should inform interpretation of its outputs.
 
 **Spatial Resolution vs. Input Resolution.** INFERNIS produces predictions at 1km grid resolution, but several key input variables originate at coarser native resolutions. ERA5 reanalysis weather data is natively ~31km; ERA5-Land soil moisture is ~9km. These are bilinearly interpolated to the 1km prediction grid, meaning neighboring cells share substantially similar weather and moisture inputs. The 1km resolution is genuine for topographic features (CDEM at ~23m), road distance, and the prediction grid itself, but weather-driven features do not carry independent information at the 1km scale. Users should interpret the 1km output as topographically and vegetatively refined risk estimates built on ~10--30km weather inputs, not as independently measured conditions at each kilometer.
 
-**Ensemble Weighting.** The hybrid architecture includes both XGBoost and CNN (FireUNet) models, combined via per-zone logistic regression calibration. In current calibration on the 1km grid, the CNN receives near-zero weight across all 14 BEC zones -- the ensemble is effectively XGBoost-only. This indicates that at 1km resolution with the current CNN architecture and training data, the cell-level XGBoost model already captures the predictive signal that the CNN's spatial context would provide. The CNN architecture remains in the pipeline and may provide additional value with higher-resolution spatial inputs, more expressive training, or alternative fusion strategies. The reported AUC-ROC of 0.974 reflects the XGBoost component; the CNN's independent AUC of 0.815 contributes minimally to the combined output.
+**Ensemble Weighting.** In current calibration on the 1km grid, the CNN receives near-zero weight across all 14 BEC zones -- the ensemble is effectively XGBoost-only. The CNN architecture remains in the pipeline and may provide additional value with higher-resolution spatial inputs, more expressive training, or alternative fusion strategies.
 
-**Feature Utilization.** The feature vector is designed for 28 inputs, but SHAP analysis reveals that several features contribute zero marginal predictive value in the current 1km model: 24-hour precipitation, evapotranspiration, slope, aspect, hillshade, and both lightning density features all show zero mean |SHAP| values. Their information may be captured by correlated features (e.g., precipitation effects absorbed by FWI moisture codes; slope/aspect absorbed by elevation). The zero lightning SHAP is notable given that lightning is responsible for roughly 60% of BC wildfire ignitions -- this likely reflects limitations in the available lightning data resolution or temporal alignment rather than the irrelevance of lightning as a fire driver. XGBoost's native gain-based importance does assign non-zero values to these features, indicating they contribute to some splits but not materially to overall prediction quality.
+**Label Definition.** Positive labels are derived from historical fire records (CNFDB point-of-origin and BC Wildfire perimeters), assigned to the nearest grid cell. Small fires (<4 hectares) are underrepresented in the historical record, and reporting consistency varies across regions and decades. The 10:1 negative sampling ratio means the training distribution differs from the true base rate of fire occurrence (approximately 0.01--0.1% of cells on any given day), and calibrated probabilities should be interpreted accordingly.
 
-**Label Definition.** Positive labels are derived from historical fire records (CNFDB point-of-origin and BC Wildfire perimeters), assigned to the nearest grid cell. Negatives are excluded within 10km/7 days of any fire event. Small fires (<4 hectares) are underrepresented in the historical record, and reporting consistency varies across regions and decades. The 10:1 negative sampling ratio, while standard in imbalanced classification, means the training distribution differs from the true base rate of fire occurrence (approximately 0.01--0.1% of cells on any given day), and calibrated probabilities should be interpreted accordingly.
-
-**Operational Calibration.** Cross-validated AUC-ROC (0.974) and walk-forward backtest AUC (0.90--0.93) measure discrimination -- the model's ability to rank fire-prone cells above non-fire cells. They do not directly measure calibration accuracy at the extreme low base rates encountered operationally. A Brier score of 0.036 indicates good overall calibration, but Brier scores can be dominated by the large number of true negatives. Reliability at operational decision thresholds (e.g., the top 1% of predictions) should be evaluated with additional metrics such as precision-recall curves and calibration diagrams before deployment in safety-critical applications.
+**Operational Calibration.** Cross-validated AUC-ROC and walk-forward backtest AUC measure discrimination -- the model's ability to rank fire-prone cells above non-fire cells. They do not directly measure calibration accuracy at the extreme low base rates encountered operationally. Brier scores can be dominated by the large number of true negatives. Reliability at operational decision thresholds (e.g., the top 1% of predictions) should be evaluated with additional metrics such as precision-recall curves and calibration diagrams before deployment in safety-critical applications.
 
 **Smoke and Extreme Events.** Model performance during active large fire events -- when smoke significantly degrades satellite imagery quality (NDVI, LAI) and atmospheric conditions deviate from reanalysis assumptions -- has not been independently evaluated. The 2023 season is included in the training data, providing some exposure to extreme conditions, but systematic evaluation of prediction quality under heavy smoke is an area for future work.
 
