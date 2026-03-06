@@ -22,13 +22,13 @@ Key differentiators include BC-specific model calibration across 14 biogeoclimat
 
 ## The Problem: Wildfire Risk in British Columbia
 
-British Columbia is in a wildfire crisis that is accelerating, not stabilizing. The 2017 fire season burned 1.2 million hectares and was declared the worst in provincial history. That record fell the very next year when 2018 saw 1.35 million hectares consumed. Both were eclipsed by the 2023 season, which burned 2.84 million hectares -- more than double the previous record and the worst wildfire season in Canadian history. This is not cyclical variation. It is a structural shift driven by climate change, fuel accumulation from decades of fire suppression, and expanding human-wildland interface.
+British Columbia is in a wildfire crisis that is accelerating, not stabilizing. The 2017 fire season burned 1.2 million hectares and was declared the worst in provincial history. That record fell the very next year when 2018 saw 1.35 million hectares consumed. Both were eclipsed by the 2023 season, which burned 2.84 million hectares in BC alone -- more than double the previous provincial record. Nationally, the 2023 season burned approximately 15 million hectares across Canada, making it the worst wildfire season in Canadian history. This is not cyclical variation. It is a structural shift driven by climate change, fuel accumulation from decades of fire suppression, and expanding human-wildland interface.
 
-The economic toll is staggering. The 2023 season is expected to have caused multi-billion-dollar losses when accounting for direct suppression expenditures (approximately $1 billion CAD in BC alone), insured property losses, infrastructure damage, public health impacts from smoke exposure, and economic disruption from evacuations that displaced over 45,000 residents. Insurance losses from wildfire are now a material line item in Canadian reinsurance portfolios, and multiple insurers have begun restricting coverage in high-risk BC communities.
+The economic toll is staggering. The 2023 season is expected to have caused multi-billion-dollar losses when accounting for wildfire management expenditures (approximately $1 billion CAD in BC alone), insured property losses, infrastructure damage, public health impacts from smoke exposure, and economic disruption from evacuations that displaced nearly 50,000 residents. Insurance losses from wildfire are now a material line item in Canadian reinsurance portfolios, and multiple insurers have begun restricting coverage in high-risk BC communities.
 
-Current wildfire danger assessment in Canada relies on the Canadian Forest Fire Danger Rating System (CFFDRS), a scientifically rigorous framework developed over decades by the Canadian Forest Service. The CFFDRS and its Fire Weather Index (FWI) System remain the gold standard for fire danger rating worldwide. However, the system was designed for an era of manual weather station readings and human interpretation. It is historically station-based, though gridded FWI products based on ERA5-style inputs now exist. The core operational system does not incorporate machine learning, satellite-derived vegetation indices, or multi-depth soil moisture reanalysis. The Canadian Wildland Fire Information System (CWFIS) does publish daily and forecast fire danger maps and exposes data layers via OGC web services (WMS/WFS/WCS), but it does not provide a modern JSON-based developer API. Its documentation and interfaces are oriented toward government fire management workflows and GIS professionals rather than commercial developers, insurers, or application builders.
+Current wildfire danger assessment in Canada relies on the Canadian Forest Fire Danger Rating System (CFFDRS), a scientifically rigorous framework developed over decades by the Canadian Forest Service. The CFFDRS and its Fire Weather Index (FWI) System remain the most widely adopted fire danger rating system in the world, used operationally across Canada, the EU (via EFFIS), and dozens of other countries. However, the system was designed for an era of manual weather station readings and human interpretation. It is historically station-based, though gridded FWI products derived from ERA5-style reanalysis inputs now exist in research contexts. The core operational system does not incorporate machine learning or multi-depth soil moisture reanalysis. CWFIS does use MODIS NDVI operationally for fuel type classification (greenup mapping) and satellite sensors for hotspot detection, but these are not used as continuous predictive features in the FWI danger rating calculation itself. The Canadian Wildland Fire Information System (CWFIS) publishes daily and forecast fire danger maps and exposes data layers via OGC web services (WMS/WFS/WCS) that support GeoJSON output, but it does not provide a purpose-built developer REST API with documentation, authentication, or onboarding. Its interfaces are oriented toward government fire management workflows and GIS professionals rather than commercial developers, insurers, or application builders.
 
-The gap between what the science makes possible and what the operational systems deliver represents both a public safety risk and a commercial opportunity.
+The gap between what the science makes possible and what the operational systems deliver -- a gap acknowledged by Canada's own Blueprint for Wildland Fire Science 2019--2029 -- represents both a public safety risk and a commercial opportunity.
 
 ---
 
@@ -181,14 +181,16 @@ Raw model outputs undergo probability calibration via Platt scaling (logistic re
 
 | System | Coverage | Resolution | ML-Enhanced | Forecast | API Access | BC-Optimized |
 |--------|----------|------------|-------------|----------|------------|--------------|
-| CWFIS | Canada | Station-based → gridded maps | No | Yes (FWI/FBP grids) | OGC GIS services (no REST) | No |
-| Technosylva Wildfire Analyst | Primarily US | High | Yes | Yes | Enterprise only | No |
-| Ambee Wildfire API | Global | 500m (global) | Limited | Limited | Yes | No |
-| **INFERNIS** | **BC** | **1km** | **Yes** | **10-day** | **Yes (REST/JSON)** | **Yes** |
+| CWFIS | Canada | Station-based → gridded maps | No | Yes (FWI/FBP grids) | OGC GIS services (GeoJSON via WFS) | No |
+| Technosylva Wildfire Analyst | Global (enterprise) | High | Yes | Yes | Enterprise only | No |
+| Ambee Wildfire API | North America (forecasts) | 500m–1km | Yes | 4-week | Yes | No |
+| AISIX Wildfire 3.0 | Canada | Property-level | Yes | Climate projections | Yes | No (national) |
+| OpenWeatherMap Fire Index | Global | 500m–2km | No (FWI-based) | No | Yes (REST/JSON) | No |
+| **INFERNIS** | **BC** | **5km (hosted) / 1km (self-hosted)** | **Yes** | **10-day** | **Yes (REST/JSON)** | **Yes** |
 
-The Canadian Wildland Fire Information System (CWFIS) is the incumbent government system. It is scientifically authoritative, publishes gridded FWI maps and multi-day forecast fire danger products, and exposes data layers via OGC web services (WMS/WFS/WCS). However, it is not ML-enhanced and does not provide a modern JSON-based developer API accessible to typical web and application developers. Technosylva's Wildfire Analyst is a sophisticated enterprise platform used by US fire agencies, but it is US-focused, carries significant licensing costs, and is not optimized for Canadian data sources or BC-specific conditions. Ambee provides a global wildfire API but operates at coarse resolution without regional calibration, making it poorly suited for BC-specific risk assessment.
+The Canadian Wildland Fire Information System (CWFIS) is the incumbent government system. It is scientifically authoritative, publishes gridded FWI maps and multi-day forecast fire danger products, and exposes data layers via OGC web services (WMS/WFS/WCS) that support GeoJSON output. However, it is not ML-enhanced and does not provide a purpose-built developer REST API with documentation, authentication, or onboarding. Technosylva's Wildfire Analyst is a sophisticated enterprise platform used by fire agencies across 9 countries including Canada (following its 2023 acquisition of Heartland Software Solutions), but it carries significant licensing costs and is not calibrated to BC's biogeoclimatic zones. Ambee provides wildfire risk forecasts for North America but without regional calibration, making it poorly suited for BC-specific risk assessment. AISIX Solutions (Vancouver) offers a Wildfire 3.0 API focused on long-term climate-projection risk through 2100 under SSP scenarios, serving a different use case than daily operational prediction. OpenWeatherMap provides a global Fire Index API based on the Canadian FWI system but without ML enhancement or regional calibration.
 
-INFERNIS occupies a distinct position: BC-specific optimization with per-BEC-zone calibration, ML-enhanced prediction built on the FWI scientific foundation, 1km spatial resolution, exclusive use of open data sources, and a REST/JSON API designed for diverse consumers from government agencies to mobile application developers.
+INFERNIS occupies a distinct position: it is the only system offering daily operational fire occurrence prediction with per-BEC-zone calibration specifically for British Columbia, ML-enhanced prediction built on the FWI scientific foundation, exclusive use of open data sources, and a REST/JSON API designed for diverse consumers from government agencies to mobile application developers.
 
 ---
 
@@ -214,7 +216,7 @@ INFERNIS occupies a distinct position: BC-specific optimization with per-BEC-zon
 | Cache Layer | Redis |
 | Satellite Data Access | Google Earth Engine |
 | Deployment | Railway |
-| Grid Resolution | 1km (2,113,524 cells), 5km legacy (84,535 cells) |
+| Grid Resolution | 5km (84,535 cells, hosted API), 1km (2,113,524 cells, self-hosted / custom) |
 | Model Features | 28 (6 FWI + 10 weather + 3 vegetation + 5 topo/infrastructure + 2 temporal + 2 lightning) |
 | Training Corpus | 298,606 labeled samples (10:1 neg:pos ratio), 2015--2024 |
 | Regional Calibration | Per-BEC-zone logistic regression across 14 zones |
@@ -246,11 +248,11 @@ INFERNIS is a research-grade system transitioning toward operational deployment.
 
 ## Conclusion
 
-Wildfire management in British Columbia stands at an inflection point. The old paradigm -- reactive response guided by station-interpolated danger ratings -- was built for a climate and a landscape that no longer exist. The 2023 season, which burned more hectares than the previous two record-setting years combined, demonstrated that the frequency and intensity of BC wildfires have moved beyond the envelope that legacy systems were designed to handle.
+Wildfire management in British Columbia stands at an inflection point. The old paradigm -- reactive response guided by station-interpolated danger ratings -- was built for a climate and a landscape that no longer exist. The 2023 season, which burned 2.84 million hectares in BC alone -- more than the previous two record-setting years combined -- demonstrated that the frequency and intensity of BC wildfires have moved beyond the envelope that legacy systems were designed to handle.
 
 INFERNIS represents the next generation of wildfire prediction: machine learning models trained on the richest open data ecosystem in the world, validated against peer-reviewed research, calibrated to the specific biogeoclimatic diversity of British Columbia, and delivered through a modern API architecture designed for integration into the systems that governments, insurers, utilities, and communities depend on.
 
-Canada publishes more open environmental data than nearly any nation on Earth. ERA5 reanalysis provides gap-free gridded weather back to 1940. The CNFDB catalogs decades of fire history. MODIS and Sentinel-2 observe the province daily from orbit. This data exists. The science to turn it into predictions has been published and validated. What has been missing is an engineered system that assembles these inputs, applies modern ML, and delivers actionable intelligence to the people and organizations who need it.
+Canada is among the world's leaders in open environmental data publication. ERA5 reanalysis provides gap-free gridded weather back to 1940. The CNFDB catalogs decades of fire history. MODIS and Sentinel-2 observe the province daily from orbit. This data exists. The science to turn it into predictions has been published and validated. What has been missing is an engineered system that assembles these inputs, applies modern ML, and delivers actionable intelligence to the people and organizations who need it.
 
 INFERNIS is that system -- built on open data, validated through rigorous backtesting, and delivered as a modern API. Intelligence forged in fire.
 
@@ -298,6 +300,12 @@ INFERNIS is that system -- built on open data, validated through rigorous backte
 
 [20] Wildfire Season Summary -- Province of British Columbia. https://www2.gov.bc.ca/gov/content/safety/wildfire-status/about-bcws/wildfire-history/wildfire-season-summary
 
+[21] Blueprint for Wildland Fire Science in Canada 2019--2029. https://natural-resources.canada.ca/forest-forestry/wildland-fires/blueprint-wildland-fire-science-canada-2019-2029
+
+[22] European Forest Fire Information System (EFFIS) -- Fire Danger Forecast. https://forest-fire.emergency.copernicus.eu/about-effis/technical-background/fire-danger-forecast
+
+[23] Global use of the Canadian Fire Weather Index: A review. ResearchGate, 2024. https://www.researchgate.net/publication/377851841
+
 ---
 
-*INFERNIS is an open-source project. Source code is available at [github.com/argonBIsystems/infernis](https://github.com/argonBIsystems/infernis). For inquiries, partnership opportunities, or API access, contact hello@argonbi.com.*
+*INFERNIS is an open-source project built by [Argon BI Systems Inc.](mailto:hello@argonbi.com) Source code is available at [github.com/argonBIsystems/infernis](https://github.com/argonBIsystems/infernis). For inquiries, partnership opportunities, or API access, contact hello@argonbi.com.*

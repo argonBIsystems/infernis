@@ -2,11 +2,11 @@
 
 > *Intelligence forged in fire.*
 
-Open-source wildfire risk prediction engine for British Columbia, Canada. INFERNIS ingests weather reanalysis, satellite imagery, soil moisture, vegetation indices, topography, and fuel classifications through an automated daily pipeline, then outputs fire risk scores via a REST API at 1km resolution.
+Open-source wildfire risk prediction engine for British Columbia, Canada. INFERNIS ingests weather reanalysis, satellite imagery, soil moisture, vegetation indices, topography, and fuel classifications through an automated daily pipeline, then outputs fire risk scores via a REST API. The hosted API runs at 5km resolution (~84K cells); the open-core engine supports 1km resolution (~2.1M cells) for self-hosted deployments. Custom implementations at either resolution are available through [Argon BI Systems Inc.](mailto:hello@argonbi.com)
 
 ## Highlights
 
-- **2.1 million grid cells** covering all of BC at 1km resolution
+- **Two grid resolutions**: 5km (~84K cells, hosted API) and 1km (~2.1M cells, self-hosted)
 - **Hybrid ML ensemble**: XGBoost + U-Net CNN with per-BEC-zone calibration
 - **Full FWI system**: Vectorized Canadian Fire Weather Index computation
 - **Multi-day forecasts**: Up to 10-day risk forecasts using HRDPS/GDPS NWP models
