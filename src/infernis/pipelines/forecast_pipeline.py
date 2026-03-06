@@ -343,7 +343,16 @@ class ForecastPipeline:
 
             from infernis.pipelines.data_processor import FEATURE_NAMES
 
-            dmatrix = xgb.DMatrix(features, feature_names=FEATURE_NAMES)
+            model_features = self._model.feature_names
+            if model_features and set(model_features) != set(FEATURE_NAMES):
+                # Model was trained on a subset of features (e.g. 5km model
+                # uses 24 features vs 28 in the full pipeline).  Select only
+                # the columns the model expects.
+                idx = [FEATURE_NAMES.index(f) for f in model_features]
+                features = features[:, idx]
+                dmatrix = xgb.DMatrix(features, feature_names=model_features)
+            else:
+                dmatrix = xgb.DMatrix(features, feature_names=FEATURE_NAMES)
             scores = self._model.predict(dmatrix)
             return np.clip(scores, 0.0, 1.0)
 

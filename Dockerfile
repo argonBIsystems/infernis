@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY pyproject.toml .
 COPY src/ src/
 
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir ".[dashboard]"
 
 # Copy models for both 1km and 5km resolutions
 COPY models/fire_core_1km_v1.json models/fire_core_1km_v1.json
