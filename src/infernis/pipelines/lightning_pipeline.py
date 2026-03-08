@@ -3,7 +3,7 @@
 The Canadian Lightning Detection Network (CLDN) data is available via
 Environment and Climate Change Canada's MSC Datamart at dd.weather.gc.ca.
 
-Lightning density grids are provided as GRIB2 at 2.5km resolution with
+Lightning density grids are provided as GeoTIFF at 2.5km resolution with
 10-minute temporal updates. The pipeline aggregates flash counts within
 each 5km grid cell over 24h and 72h windows.
 """
@@ -11,6 +11,7 @@ each 5km grid cell over 24h and 72h windows.
 import logging
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 
 import httpx
 import numpy as np
@@ -19,14 +20,19 @@ from infernis.config import settings
 
 logger = logging.getLogger(__name__)
 
-# MSC Datamart base URL for lightning data
-MSC_DATAMART_BASE = "https://dd.weather.gc.ca/lightning_data/2.5km"
+# MSC Datamart URLs for lightning data (restructured late 2025)
+# /today/ has rolling ~24h; archived days under /{YYYYMMDD}/WXO-DD/lightning/
+MSC_TODAY_URL = "https://dd.weather.gc.ca/today/lightning"
+MSC_ARCHIVE_URL = "https://dd.weather.gc.ca/{date_str}/WXO-DD/lightning"
 
 # BC bounding box for filtering
 BC_SOUTH = settings.bc_bbox_south
 BC_NORTH = settings.bc_bbox_north
 BC_WEST = settings.bc_bbox_west
 BC_EAST = settings.bc_bbox_east
+
+# GeoTIFF nodata value
+NODATA = -999.0
 
 
 class LightningPipeline:
@@ -52,19 +58,15 @@ class LightningPipeline:
         n_cells = len(grid_lats)
 
         try:
-            # Fetch 24h lightning data
-            flashes_24h = self._fetch_flashes(target_date, hours_back=24)
-            # Fetch 72h lightning data
-            flashes_72h = self._fetch_flashes(target_date, hours_back=72)
+            density_24h = self._fetch_window(target_date, grid_lats, grid_lons, hours_back=24)
+            density_72h = self._fetch_window(target_date, grid_lats, grid_lons, hours_back=72)
 
-            # Aggregate to grid cells
-            density_24h = self._aggregate_to_grid(flashes_24h, grid_lats, grid_lons)
-            density_72h = self._aggregate_to_grid(flashes_72h, grid_lats, grid_lons)
-
+            total_24h = int(density_24h.sum())
+            total_72h = int(density_72h.sum())
             logger.info(
                 "Lightning data: %d flashes (24h), %d flashes (72h)",
-                len(flashes_24h),
-                len(flashes_72h),
+                total_24h,
+                total_72h,
             )
 
             return {
@@ -79,111 +81,112 @@ class LightningPipeline:
                 "lightning_72h": np.zeros(n_cells),
             }
 
-    def _fetch_flashes(self, target_date: date, hours_back: int = 24) -> list:
-        """Fetch lightning flash records from MSC Datamart.
-
-        MSC Datamart provides CLDN data as CSV with columns:
-        date, time, latitude, longitude, strength, multiplicity, type
-        """
-        flashes = []
-        end_dt = datetime.combine(target_date, datetime.max.time().replace(tzinfo=timezone.utc))
-        start_dt = end_dt - timedelta(hours=hours_back)
-
-        # Try fetching data files for each day in the window
-        current_date = start_dt.date()
-        while current_date <= end_dt.date():
-            day_flashes = self._fetch_day_flashes(current_date)
-            # Filter to BC and time window
-            for flash in day_flashes:
-                if BC_SOUTH <= flash["lat"] <= BC_NORTH and BC_WEST <= flash["lon"] <= BC_EAST:
-                    flashes.append(flash)
-            current_date += timedelta(days=1)
-
-        return flashes
-
-    def _fetch_day_flashes(self, target_date: date) -> list:
-        """Fetch flash data for a single day from MSC Datamart.
-
-        Tries the real-time and archive paths. Falls back gracefully.
-        """
-        flashes = []
-        date_str = target_date.strftime("%Y%m%d")
-
-        # MSC Datamart provides lightning summary files
-        # Format: CG_{YYYYMMDD}_{HH}00.csv
-        for hour in range(24):
-            url = f"{MSC_DATAMART_BASE}/{date_str}/CG_{date_str}_{hour:02d}00.csv"
-            try:
-                response = self._client.get(url)
-                if response.status_code == 200:
-                    flashes.extend(self._parse_cldn_csv(response.text, target_date, hour))
-            except httpx.HTTPError:
-                continue  # File not available yet, skip
-
-        return flashes
-
-    def _parse_cldn_csv(self, content: str, target_date: date, hour: int) -> list:
-        """Parse CLDN CSV format into flash records.
-
-        Expected CSV format (no header):
-        latitude,longitude,strength_kA,multiplicity,cloud_to_ground_flag
-        """
-        flashes = []
-        for line in content.strip().split("\n"):
-            line = line.strip()
-            if not line or line.startswith("#") or line.startswith("lat"):
-                continue
-            try:
-                parts = line.split(",")
-                if len(parts) >= 2:
-                    lat = float(parts[0])
-                    lon = float(parts[1])
-                    strength = float(parts[2]) if len(parts) > 2 else 0.0
-                    flashes.append(
-                        {
-                            "lat": lat,
-                            "lon": lon,
-                            "strength_kA": strength,
-                            "date": target_date,
-                            "hour": hour,
-                        }
-                    )
-            except (ValueError, IndexError):
-                continue
-
-        return flashes
-
-    def _aggregate_to_grid(
+    def _fetch_window(
         self,
-        flashes: list,
+        target_date: date,
         grid_lats: np.ndarray,
         grid_lons: np.ndarray,
+        hours_back: int,
     ) -> np.ndarray:
-        """Aggregate flash counts to nearest grid cells using KD-tree.
-
-        For each lightning flash, find the nearest grid cell and increment
-        that cell's flash count.
-        """
+        """Fetch and aggregate lightning GeoTIFFs over a time window."""
         n_cells = len(grid_lats)
         counts = np.zeros(n_cells, dtype=np.float64)
 
-        if not flashes:
-            return counts
+        end_dt = datetime.combine(target_date + timedelta(days=1), datetime.min.time())
+        end_dt = end_dt.replace(tzinfo=timezone.utc)
+        start_dt = end_dt - timedelta(hours=hours_back)
 
-        from scipy.spatial import KDTree
+        # Iterate over each day in the window
+        current_date = start_dt.date()
+        files_processed = 0
+        while current_date <= end_dt.date():
+            timestamps = self._generate_timestamps(current_date, start_dt, end_dt)
+            for ts in timestamps:
+                density = self._fetch_and_sample_tif(ts, grid_lats, grid_lons)
+                if density is not None:
+                    counts += density
+                    files_processed += 1
+            current_date += timedelta(days=1)
 
-        grid_coords = np.column_stack([grid_lats, grid_lons])
-        tree = KDTree(grid_coords)
-
-        # Half-cell size in degrees (approx) for matching threshold
-        max_dist = settings.grid_resolution_km * 0.01  # ~0.05 degrees at 5km
-
-        for flash in flashes:
-            dist, idx = tree.query([flash["lat"], flash["lon"]])
-            if dist <= max_dist:
-                counts[idx] += 1.0
-
+        logger.debug("Lightning: processed %d TIF files for %dh window", files_processed, hours_back)
         return counts
+
+    def _generate_timestamps(
+        self, day: date, window_start: datetime, window_end: datetime
+    ) -> list[str]:
+        """Generate 10-minute timestamp strings for a day within the time window."""
+        timestamps = []
+        for hour in range(24):
+            for minute in range(0, 60, 10):
+                dt = datetime(day.year, day.month, day.day, hour, minute, tzinfo=timezone.utc)
+                if window_start <= dt < window_end:
+                    timestamps.append(dt.strftime("%Y%m%dT%H%MZ"))
+        return timestamps
+
+    def _fetch_and_sample_tif(
+        self, timestamp: str, grid_lats: np.ndarray, grid_lons: np.ndarray
+    ) -> np.ndarray | None:
+        """Download a lightning GeoTIFF and sample it at grid cell locations."""
+        import rasterio
+        from rasterio.transform import rowcol
+
+        filename = f"{timestamp}_MSC_Lightning_2.5km.tif"
+
+        # Try cache first
+        cached = self.data_dir / filename
+        if cached.exists() and cached.stat().st_size > 0:
+            return self._read_tif(cached, grid_lats, grid_lons)
+
+        # Determine URL: today's data vs archive
+        date_str = timestamp[:8]
+        today_str = date.today().strftime("%Y%m%d")
+        if date_str == today_str:
+            url = f"{MSC_TODAY_URL}/{filename}"
+        else:
+            url = f"{MSC_ARCHIVE_URL.format(date_str=date_str)}/{filename}"
+
+        try:
+            response = self._client.get(url)
+            if response.status_code == 200:
+                cached.write_bytes(response.content)
+                return self._read_tif(cached, grid_lats, grid_lons)
+        except httpx.HTTPError:
+            pass
+
+        return None
+
+    def _read_tif(
+        self, filepath: Path, grid_lats: np.ndarray, grid_lons: np.ndarray
+    ) -> np.ndarray:
+        """Read a lightning GeoTIFF and sample at grid cell locations."""
+        import rasterio
+
+        n_cells = len(grid_lats)
+        counts = np.zeros(n_cells, dtype=np.float64)
+
+        with rasterio.open(filepath) as ds:
+            data = ds.read(1)
+            transform = ds.transform
+
+            # Convert grid lat/lon to row/col in the raster
+            rows, cols = rasterio.transform.rowcol(transform, grid_lons, grid_lats)
+            rows = np.array(rows)
+            cols = np.array(cols)
+
+            # Filter to valid indices within raster bounds
+            valid = (
+                (rows >= 0) & (rows < ds.height) & (cols >= 0) & (cols < ds.width)
+            )
+
+            values = np.zeros(n_cells, dtype=np.float64)
+            if valid.any():
+                values[valid] = data[rows[valid], cols[valid]]
+
+            # Replace nodata with 0, clip negatives
+            values[values <= NODATA] = 0.0
+            values = np.maximum(values, 0.0)
+
+        return values
 
     def close(self):
         """Close the HTTP client."""
