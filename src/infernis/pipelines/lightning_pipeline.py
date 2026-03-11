@@ -11,7 +11,6 @@ each 5km grid cell over 24h and 72h windows.
 import logging
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from tempfile import NamedTemporaryFile
 
 import httpx
 import numpy as np
@@ -108,7 +107,9 @@ class LightningPipeline:
                     files_processed += 1
             current_date += timedelta(days=1)
 
-        logger.debug("Lightning: processed %d TIF files for %dh window", files_processed, hours_back)
+        logger.debug(
+            "Lightning: processed %d TIF files for %dh window", files_processed, hours_back
+        )
         return counts
 
     def _generate_timestamps(
@@ -127,9 +128,6 @@ class LightningPipeline:
         self, timestamp: str, grid_lats: np.ndarray, grid_lons: np.ndarray
     ) -> np.ndarray | None:
         """Download a lightning GeoTIFF and sample it at grid cell locations."""
-        import rasterio
-        from rasterio.transform import rowcol
-
         filename = f"{timestamp}_MSC_Lightning_2.5km.tif"
 
         # Try cache first
@@ -155,14 +153,11 @@ class LightningPipeline:
 
         return None
 
-    def _read_tif(
-        self, filepath: Path, grid_lats: np.ndarray, grid_lons: np.ndarray
-    ) -> np.ndarray:
+    def _read_tif(self, filepath: Path, grid_lats: np.ndarray, grid_lons: np.ndarray) -> np.ndarray:
         """Read a lightning GeoTIFF and sample at grid cell locations."""
         import rasterio
 
         n_cells = len(grid_lats)
-        counts = np.zeros(n_cells, dtype=np.float64)
 
         with rasterio.open(filepath) as ds:
             data = ds.read(1)
@@ -174,9 +169,7 @@ class LightningPipeline:
             cols = np.array(cols)
 
             # Filter to valid indices within raster bounds
-            valid = (
-                (rows >= 0) & (rows < ds.height) & (cols >= 0) & (cols < ds.width)
-            )
+            valid = (rows >= 0) & (rows < ds.height) & (cols >= 0) & (cols < ds.width)
 
             values = np.zeros(n_cells, dtype=np.float64)
             if valid.any():
