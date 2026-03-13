@@ -1,127 +1,164 @@
-# INFERNIS
+<p align="center">
+  <img src="brand/infernis-logo.svg" alt="INFERNIS" width="420"/>
+</p>
 
-> *Intelligence forged in fire.*
+<p align="center">
+  <em>Open-source wildfire risk prediction for British Columbia</em>
+</p>
 
-Open-source wildfire risk prediction engine for British Columbia, Canada. INFERNIS ingests weather reanalysis, satellite imagery, soil moisture, vegetation indices, topography, and fuel classifications through an automated daily pipeline, then outputs fire risk scores via a REST API. The hosted API runs at 5km resolution (~84K cells); the open-core engine supports 1km resolution (~2.1M cells) for self-hosted deployments. Custom implementations at either resolution are available through [Argon BI Systems Inc.](mailto:hello@argonbi.com)
+<p align="center">
+  <a href="https://infernis.ca">Live API</a> &bull;
+  <a href="https://api.infernis.ca/v1/docs">API Docs</a> &bull;
+  <a href="https://api.infernis.ca/v1/demo/risk">Try Demo</a> &bull;
+  <a href="docs/WHITE_PAPER.md">White Paper</a> &bull;
+  <a href="CONTRIBUTING.md">Contribute</a>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white" alt="Python 3.11+"/>
+  <img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="License"/>
+  <img src="https://img.shields.io/badge/API-Live-22C55E" alt="API Status"/>
+  <img src="https://img.shields.io/badge/Grid-84K%20cells-F97316" alt="Grid Cells"/>
+</p>
+
+---
+
+INFERNIS ingests weather forecasts, satellite imagery, soil moisture, vegetation indices, topography, and fuel classifications through an automated daily pipeline, then outputs fire risk scores via a REST API. The hosted API runs at 5 km resolution (~84K cells); the engine supports 1 km resolution (~2.1M cells) for self-hosted deployments.
 
 ## Highlights
 
-- **Two grid resolutions**: 5km (~84K cells, hosted API) and 1km (~2.1M cells, self-hosted)
-- **Hybrid ML ensemble**: XGBoost + U-Net CNN with per-BEC-zone calibration
-- **Full FWI system**: Vectorized Canadian Fire Weather Index computation
-- **Multi-day forecasts**: Up to 10-day risk forecasts using HRDPS/GDPS NWP models
-- **REST API**: JSON endpoints for point queries, area grids, heatmaps, and forecasts
-- **Automated pipeline**: Daily data fetch, prediction, and cache update via APScheduler
+- **84,535 grid cells** covering all of British Columbia, updated daily at 2 PM Pacific
+- **10-day forecasts** using real NWP data (ECCC GEM model via Open-Meteo)
+- **Full FWI system** — vectorized Canadian Fire Weather Index (all 6 components)
+- **XGBoost + CNN ensemble** with per-BEC-zone calibration (0.974 AUC-ROC)
+- **REST API** — point queries, area grids, PNG heatmaps, multi-day forecasts
+- **21 open data sources** — ERA5, MODIS, VIIRS, HRDPS, GDPS, CLDN, and more
+- **Demo endpoints** — explore response shapes without an API key
+
+## Try It Now
+
+No API key needed — hit the demo endpoints to see what INFERNIS returns:
+
+```bash
+# All 6 danger levels with realistic mock data
+curl https://api.infernis.ca/v1/demo/risk | python -m json.tool
+
+# Single level
+curl https://api.infernis.ca/v1/demo/risk/high | python -m json.tool
+
+# 10-day forecast showing a drying event
+curl https://api.infernis.ca/v1/demo/forecast | python -m json.tool
+```
+
+For live data, [sign up for a free API key](https://infernis.ca) (50 requests/day):
+
+```bash
+# Real-time fire risk for Kamloops
+curl -H "X-API-Key: YOUR_KEY" https://api.infernis.ca/v1/risk/50.67/-120.33
+
+# 10-day forecast for Williams Lake
+curl -H "X-API-Key: YOUR_KEY" https://api.infernis.ca/v1/forecast/52.13/-122.14
+```
 
 ## Model Performance
 
 | Model | AUC-ROC | Avg Precision | Brier Score |
 |-------|---------|---------------|-------------|
-| XGBoost (1km, 28 features) | 0.974 | 0.794 | 0.036 |
-| CNN FireUNet (1km spatial) | 0.815 | -- | -- |
-| Walk-forward backtest (6 years) | 0.90-0.93 | 0.43-0.59 | 0.04-0.08 |
+| XGBoost (1 km, 28 features) | 0.974 | 0.794 | 0.036 |
+| CNN FireUNet (1 km spatial) | 0.815 | -- | -- |
+| Walk-forward backtest (6 years) | 0.90–0.93 | 0.43–0.59 | 0.04–0.08 |
 
 ## Quick Start
 
 ```bash
-# Clone and install
+# Clone and set up
 git clone https://github.com/argonBIsystems/infernis.git
 cd infernis
-pip install -e ".[dev]"
+./scripts/dev_setup.sh    # creates venv, installs deps, copies .env
 
-# Copy environment template
-cp .env.example .env
-# Edit .env with your API keys (CDS, GEE, etc.)
+# Start databases and run migrations
+make db-up
+make migrate
 
-# Start infrastructure (PostgreSQL + Redis)
-docker-compose up -d db redis
-
-# Run database migrations
-alembic upgrade head
-
-# Generate BC grid (optional: skip GEE topography with --skip-topo)
-python scripts/generate_grid.py --resolution 1
-
-# Start the API server
-uvicorn infernis.main:app --host 0.0.0.0 --port 8000
+# Start the API
+make dev
 ```
 
-The server starts the daily pipeline automatically. Visit `http://localhost:8000/v1/docs` for interactive API documentation.
+Visit `http://localhost:8000/v1/docs` for interactive API docs. The daily pipeline starts automatically.
 
-## Grid Resolution
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development setup guide.
 
-INFERNIS supports two grid resolutions, controlled by the `INFERNIS_GRID_RESOLUTION_KM` environment variable in `.env`:
+## API Endpoints
 
-| Resolution | Cells | Pipeline Time | Use Case |
-|------------|-------|---------------|----------|
-| `1.0` (1km) | ~2.1M | ~5-12 min | Full precision, local development, research |
-| `5.0` (5km) | ~84K | ~30s | Lightweight, demos, cost-sensitive deployments |
+| Endpoint | Description | Auth |
+|----------|-------------|------|
+| `GET /v1/risk/{lat}/{lon}` | Point fire risk query | API Key |
+| `GET /v1/forecast/{lat}/{lon}` | Multi-day forecast (up to 10 days) | API Key |
+| `GET /v1/risk/grid?bbox=...` | Area risk query (GeoJSON) | API Key |
+| `GET /v1/risk/heatmap?bbox=...` | Visual risk heatmap (PNG) | API Key |
+| `GET /v1/risk/zones` | BC zone risk summary | API Key |
+| `GET /v1/fwi/{lat}/{lon}` | Raw FWI components | API Key |
+| `GET /v1/conditions/{lat}/{lon}` | Weather/environment conditions | API Key |
+| `GET /v1/status` | Pipeline health | Public |
+| `GET /v1/coverage` | Grid metadata | Public |
+| `GET /v1/demo/risk` | Sample data at all danger levels | Public |
+| `GET /v1/demo/risk/{level}` | Sample data for one level | Public |
+| `GET /v1/demo/forecast` | Sample 10-day forecast | Public |
 
-```bash
-# .env — set resolution (default: 1.0)
-INFERNIS_GRID_RESOLUTION_KM=1.0
+See [API Reference](docs/API_REFERENCE.md) for full documentation with request/response examples.
 
-# Regenerate the grid after changing resolution
-python scripts/generate_grid.py --resolution 1   # or --resolution 5
-```
+## Danger Levels
 
-Both resolutions use the same model architecture. Pre-trained weights are resolution-specific (`fire_core_1km_v1.json` vs `fire_core_v1.json` for 5km).
-
-## Pre-trained Models
-
-Pre-trained model weights are available for download (not included in the repo due to size):
-
-| Model | Size | Download |
-|-------|------|----------|
-| XGBoost 1km (`fire_core_1km_v1.json`) | 19 MB | *Coming soon* |
-| CNN 1km (`heatmap_1km_v1.pt`) | 119 MB | *Coming soon* |
-| BEC calibration (`bec_calibration_1km.json`) | 1.5 KB | *Coming soon* |
-
-Place downloaded models in the `models/` directory. Alternatively, train your own using the included training scripts (see Training below).
-
-## API
-
-```
-GET /v1/risk/{lat}/{lon}          Point fire risk query
-GET /v1/forecast/{lat}/{lon}      Multi-day forecast (up to 10 days)
-GET /v1/risk/grid?bbox=...        Area risk query (GeoJSON)
-GET /v1/risk/heatmap?bbox=...     Visual risk heatmap (PNG)
-GET /v1/risk/zones                BC zone risk summary
-GET /v1/fwi/{lat}/{lon}           Raw FWI components
-GET /v1/conditions/{lat}/{lon}    Weather/environment conditions
-GET /v1/history/{lat}/{lon}       Historical fire records
-GET /v1/status                    System health
-GET /v1/coverage                  Grid metadata
-```
-
-Authentication via `X-API-Key` header. Free tier: 50 requests/day. See [API Reference](docs/API_REFERENCE.md) for full documentation.
+| Level | Score Range | Color | Description |
+|-------|------------|-------|-------------|
+| VERY_LOW | 0.00–0.05 | ![#22C55E](https://via.placeholder.com/12/22C55E/22C55E.png) `#22C55E` | Minimal risk |
+| LOW | 0.05–0.15 | ![#3B82F6](https://via.placeholder.com/12/3B82F6/3B82F6.png) `#3B82F6` | Low risk |
+| MODERATE | 0.15–0.35 | ![#EAB308](https://via.placeholder.com/12/EAB308/EAB308.png) `#EAB308` | Elevated — monitor conditions |
+| HIGH | 0.35–0.60 | ![#F97316](https://via.placeholder.com/12/F97316/F97316.png) `#F97316` | Significant risk — fire bans likely |
+| VERY_HIGH | 0.60–0.80 | ![#EF4444](https://via.placeholder.com/12/EF4444/EF4444.png) `#EF4444` | Extreme caution |
+| EXTREME | 0.80–1.00 | ![#1A0000](https://via.placeholder.com/12/1A0000/1A0000.png) `#1A0000` | Immediate danger |
 
 ## How It Works
 
-1. **Data Pipeline** -- Daily fetch of ERA5 weather reanalysis (with 7-day fallback for data lag), MODIS satellite imagery via Google Earth Engine, and weather station data.
+1. **Data Pipeline** — Daily fetch of ERA5 weather, MODIS/VIIRS satellite imagery via Google Earth Engine, Open-Meteo NWP forecasts, and lightning data.
 
-2. **FWI Computation** -- Vectorized Canadian Fire Weather Index system computing all 6 components (FFMC, DMC, DC, ISI, BUI, FWI) for 2.1M cells in a single numpy call.
+2. **FWI Computation** — Vectorized Canadian Fire Weather Index system computing all 6 components (FFMC, DMC, DC, ISI, BUI, FWI) for every grid cell.
 
-3. **XGBoost Classifier** -- Gradient-boosted tree model trained on 10 years of historical fire data (2015-2024) with 28 features spanning FWI, weather, vegetation, topography, and soil moisture.
+3. **XGBoost Classifier** — Gradient-boosted model trained on 10 years of historical fire data (2015–2024) with 28 features: FWI, weather, vegetation, topography, soil moisture, and lightning.
 
-4. **CNN Spatial Model** -- U-Net architecture (FireUNet) processing daily raster snapshots of BC to capture spatial fire spread patterns and topographic effects.
+4. **CNN Spatial Model** — U-Net architecture (FireUNet) processing daily raster snapshots to capture spatial fire spread patterns.
 
-5. **Risk Fusion** -- Weighted ensemble of XGBoost + CNN scores with per-BEC-zone logistic calibration, outputting a 6-level danger classification (VERY_LOW through EXTREME).
+5. **Risk Fusion** — Weighted ensemble with per-BEC-zone logistic calibration, outputting a 6-level danger classification.
 
-6. **Forecast Engine** -- Multi-day risk forecasts using HRDPS (2.5km, days 1-2) and GDPS (15km, days 3-10) numerical weather prediction with FWI roll-forward and confidence decay.
+6. **Forecast Engine** — 10-day fire risk forecasts using ECCC's GEM model (HRDPS 2.5 km for days 1–2, GDPS for days 3–10) with FWI roll-forward and confidence decay.
+
+## Grid Resolution
+
+| Resolution | Cells | Pipeline Time | Use Case |
+|------------|-------|---------------|----------|
+| 5 km | ~84K | ~30s | Hosted API, lightweight deployments |
+| 1 km | ~2.1M | ~5–12 min | Full precision, research, self-hosted |
+
+```bash
+# Set in .env (default: 1.0)
+INFERNIS_GRID_RESOLUTION_KM=5.0
+
+# Regenerate grid after changing resolution
+python scripts/generate_grid.py --resolution 5
+```
 
 ## Training
 
-Train your own models from scratch:
+Train your own models from scratch using the included scripts:
 
 ```bash
-# Full training pipeline (feature engineering + XGBoost + calibration)
+# Feature engineering → XGBoost training → calibration
 python scripts/train.py process --data-dir data/raw --output data/processed/features
 python scripts/train.py build --features data/processed/features --output data/processed/training_data.parquet
 python scripts/train.py train --data data/processed/training_data.parquet --output models/
 python scripts/train.py evaluate --model models/fire_core_v1.json --data data/processed/training_data.parquet
 
-# Train CNN heatmap model
+# CNN heatmap model
 python scripts/train_heatmap.py --data-dir data/processed/heatmap --epochs 30
 
 # Per-BEC-zone calibration
@@ -131,20 +168,41 @@ python scripts/calibrate_bec.py --data data/processed/training_data.parquet --ou
 python scripts/backtest.py backtest --data data/processed/training_data.parquet --output reports/backtest.json
 ```
 
+Pre-trained weights are not included in the repo (see [Pre-trained Models](#pre-trained-models) below).
+
+## Pre-trained Models
+
+| Model | Size | Status |
+|-------|------|--------|
+| XGBoost 1 km (`fire_core_1km_v1.json`) | 19 MB | *Coming soon* |
+| CNN 1 km (`heatmap_1km_v1.pt`) | 119 MB | *Coming soon* |
+| BEC calibration (`bec_calibration_1km.json`) | 1.5 KB | *Coming soon* |
+
+Place downloaded models in the `models/` directory.
+
 ## Project Structure
 
 ```
 src/infernis/
-  api/              REST API routes, auth, Firebase dashboard
-  db/               SQLAlchemy ORM, PostGIS, migrations
-  grid/             BC grid generator (1km/5km, BC Albers EPSG:3005)
+  api/              REST API routes, auth middleware
+  db/               SQLAlchemy ORM, PostGIS engine
+  grid/             BC grid generator (1 km / 5 km, EPSG:3005)
   models/           Pydantic schemas, danger level enums
-  pipelines/        Daily pipeline, ERA5, GEE, HRDPS/GDPS, forecasting
+  pipelines/        Daily pipeline, ERA5, GEE, Open-Meteo, HRDPS/GDPS, forecasting
   services/         Vectorized FWI (CFFDRS), Redis cache
   training/         XGBoost trainer, FireUNet CNN, risk fuser, backtester
+  main.py           FastAPI app entry point
+  admin.py          CLI tools (key management, grid init, pipeline runner)
 
-tests/              190+ tests across 24 test files
-docs/               White paper, technical architecture, API reference
+scripts/
+  download/         21 data download scripts (ERA5, MODIS, CLDN, DEM, etc.)
+  train.py          Model training pipeline
+  backtest.py       Historical backtesting
+  dev_setup.sh      One-command development setup
+
+tests/              Test suite (mirrors src/ structure)
+docs/               White paper, architecture, API reference
+brand/              Logo SVGs, icon, brand guidelines
 ```
 
 ## Documentation
@@ -154,6 +212,7 @@ docs/               White paper, technical architecture, API reference
 | [White Paper](docs/WHITE_PAPER.md) | Problem statement, wildfire science, methodology |
 | [Technical Architecture](docs/TECHNICAL_ARCHITECTURE.md) | System design, database schema, pipeline flows |
 | [API Reference](docs/API_REFERENCE.md) | Full endpoint documentation with examples |
+| [Brand Guidelines](brand/BRAND.md) | Logo, colors, danger level palette, usage |
 
 ## Tech Stack
 
@@ -161,25 +220,34 @@ docs/               White paper, technical architecture, API reference
 - **ML**: XGBoost 2.1, PyTorch 2.x (MPS/CUDA), scikit-learn
 - **FWI**: Custom vectorized CFFDRS (numpy)
 - **Geospatial**: GeoPandas, Rasterio, Shapely, pyproj
-- **Data**: ERA5 (CDS API), Google Earth Engine, NASA FIRMS
+- **Weather**: Open-Meteo (GEM seamless), ERA5 (CDS API), HRDPS/GDPS (GRIB2 fallback)
+- **Satellite**: Google Earth Engine (MODIS, VIIRS), NASA FIRMS
 - **Database**: PostgreSQL 16 + PostGIS 3.4, Redis 7
-- **Deploy**: Docker, Railway, GitHub Actions
+- **Deploy**: Docker, Railway, GitHub Actions CI
 
 ## Contributing
 
-Contributions are welcome. Please open an issue to discuss proposed changes before submitting a pull request.
+We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide.
 
 ```bash
-# Run tests
-python -m pytest tests/ -q
-
-# Format code
-ruff format src/ tests/
-ruff check --fix src/ tests/
+make test      # Run tests
+make fmt       # Format with ruff
 ```
+
+**Good places to start:**
+- New data source integrations
+- Model improvements and feature engineering
+- API endpoint enhancements
+- Performance optimizations
+- Documentation
 
 ## License
 
 [Apache License 2.0](LICENSE)
 
-Built in British Columbia, Canada.
+---
+
+<p align="center">
+  Built in British Columbia, Canada<br/>
+  <a href="https://argonbi.com">Argon BI Systems Inc.</a>
+</p>
