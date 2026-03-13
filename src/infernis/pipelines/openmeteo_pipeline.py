@@ -8,7 +8,7 @@ Open-Meteo serves the same underlying GEM/HRDPS/GDPS data as MSC Datamart
 but as lightweight JSON instead of raw GRIB2 files.
 
 License: CC BY 4.0 (free for commercial and non-commercial use with attribution).
-Rate limit: 10,000 calls/day (free tier, no API key required).
+Rate limit: 10,000 calls/day, 600 calls/min (free tier, no API key required).
 """
 
 from __future__ import annotations
@@ -34,11 +34,15 @@ DAILY_VARIABLES = [
     "et0_fao_evapotranspiration",
 ]
 
-# Max coordinates per batch request (tested: 100 works in ~1s)
-BATCH_SIZE = 100
+# Max coordinates per batch request (tested: 350 works, 400 hits URI limit)
+BATCH_SIZE = 300
 
-# Pause between batches to respect rate limits (600/min = 100ms min)
-BATCH_DELAY_S = 0.15
+# Pause between batches — 600 req/min limit = 100ms min, use 300ms for safety
+BATCH_DELAY_S = 0.3
+
+# Retry config for rate limiting (429)
+MAX_RETRIES = 3
+RETRY_BASE_DELAY_S = 5.0  # 5s, 10s, 20s backoff
 
 
 class OpenMeteoPipeline:
@@ -88,33 +92,56 @@ class OpenMeteoPipeline:
         cells_failed = 0
 
         logger.info(
-            "Open-Meteo: fetching %d-day forecast for %d cells in %d batches",
+            "Open-Meteo: fetching %d-day forecast for %d cells in %d batches (batch_size=%d)",
             forecast_days,
             n_cells,
             n_batches,
+            BATCH_SIZE,
         )
 
-        with httpx.Client(timeout=30.0) as client:
+        with httpx.Client(timeout=60.0) as client:
             for batch_idx in range(n_batches):
                 start = batch_idx * BATCH_SIZE
                 end = min(start + BATCH_SIZE, n_cells)
                 batch_lats = grid_lats[start:end]
                 batch_lons = grid_lons[start:end]
 
-                try:
-                    batch_data = self._fetch_batch(
-                        client, batch_lats, batch_lons, forecast_days
-                    )
-                    self._fill_result(result, batch_data, start, end, forecast_days)
-                    cells_fetched += end - start
-                except Exception as e:
-                    logger.warning(
-                        "Open-Meteo batch %d/%d failed: %s", batch_idx + 1, n_batches, e
-                    )
-                    cells_failed += end - start
+                success = False
+                for attempt in range(MAX_RETRIES + 1):
+                    try:
+                        batch_data = self._fetch_batch(
+                            client, batch_lats, batch_lons, forecast_days
+                        )
+                        self._fill_result(result, batch_data, start, end, forecast_days)
+                        cells_fetched += end - start
+                        success = True
+                        break
+                    except Exception as e:
+                        is_rate_limit = "429" in str(e)
+                        if is_rate_limit and attempt < MAX_RETRIES:
+                            delay = RETRY_BASE_DELAY_S * (2**attempt)
+                            logger.warning(
+                                "Open-Meteo batch %d/%d rate-limited (attempt %d/%d), "
+                                "retrying in %.0fs",
+                                batch_idx + 1,
+                                n_batches,
+                                attempt + 1,
+                                MAX_RETRIES + 1,
+                                delay,
+                            )
+                            time.sleep(delay)
+                        else:
+                            logger.warning(
+                                "Open-Meteo batch %d/%d failed: %s",
+                                batch_idx + 1,
+                                n_batches,
+                                e,
+                            )
+                            cells_failed += end - start
+                            break
 
-                # Progress logging every 100 batches
-                if (batch_idx + 1) % 100 == 0 or batch_idx == n_batches - 1:
+                # Progress logging every 50 batches
+                if (batch_idx + 1) % 50 == 0 or batch_idx == n_batches - 1:
                     logger.info(
                         "Open-Meteo progress: %d/%d batches (%d cells fetched, %d failed)",
                         batch_idx + 1,
@@ -123,11 +150,12 @@ class OpenMeteoPipeline:
                         cells_failed,
                     )
 
-                # Rate limit pause
-                if batch_idx < n_batches - 1:
+                # Rate limit pause between batches
+                if batch_idx < n_batches - 1 and success:
                     time.sleep(BATCH_DELAY_S)
 
-        # Fill any NaN cells with reasonable defaults (shouldn't happen unless API fails)
+        # Fill any NaN cells with reasonable defaults
+        nan_total = 0
         for day in range(1, forecast_days + 1):
             weather = result[day]
             for key, default in [
@@ -141,14 +169,16 @@ class OpenMeteoPipeline:
                 nan_mask = np.isnan(weather[key])
                 if nan_mask.any():
                     weather[key][nan_mask] = default
-                    if day == 1:  # Only log once
-                        logger.warning(
-                            "Open-Meteo: %d cells have NaN %s on day %d, using default %.1f",
-                            nan_mask.sum(),
-                            key,
-                            day,
-                            default,
-                        )
+                    if day == 1 and key == "temperature_c":
+                        nan_total = int(nan_mask.sum())
+
+        if nan_total > 0:
+            logger.warning(
+                "Open-Meteo: %d/%d cells (%.1f%%) fell back to NaN defaults",
+                nan_total,
+                n_cells,
+                nan_total / n_cells * 100,
+            )
 
         success_pct = cells_fetched / n_cells * 100 if n_cells > 0 else 0
         logger.info(
