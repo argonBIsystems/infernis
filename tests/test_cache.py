@@ -77,3 +77,67 @@ class TestCacheWithRedis:
         loaded = load_fwi_state()
         assert "cell_1" in loaded
         assert loaded["cell_1"]["ffmc"] == 85.0
+
+
+class TestForecastCache:
+    def test_cache_forecasts_writes_to_redis(self):
+        from unittest.mock import MagicMock
+
+        from infernis.services.cache import cache_forecasts
+
+        mock_redis = MagicMock()
+        forecasts = {
+            "BC-5K-0000001": [
+                {"lead_day": 1, "risk_score": 0.3, "valid_date": "2026-07-16"},
+                {"lead_day": 2, "risk_score": 0.4, "valid_date": "2026-07-17"},
+            ],
+        }
+
+        with patch("infernis.services.cache.get_redis", return_value=mock_redis):
+            count = cache_forecasts(forecasts, "2026-07-15")
+
+        assert count == 1
+        mock_redis.setex.assert_any_call("forecast:base_date", 172800, "2026-07-15")
+
+    def test_cache_forecasts_returns_zero_when_redis_unavailable(self):
+        from infernis.services.cache import cache_forecasts
+
+        with patch("infernis.services.cache.get_redis", return_value=None):
+            count = cache_forecasts({"cell": [{"day": 1}]}, "2026-07-15")
+
+        assert count == 0
+
+    def test_load_forecasts_from_redis_returns_empty_when_no_redis(self):
+        from infernis.services.cache import load_forecasts_from_redis
+
+        with patch("infernis.services.cache.get_redis", return_value=None):
+            forecasts, base_date = load_forecasts_from_redis()
+
+        assert forecasts == {}
+        assert base_date is None
+
+
+class TestPredictionCacheLoad:
+    def test_load_predictions_returns_empty_when_no_redis(self):
+        from infernis.services.cache import load_predictions_from_redis
+
+        with patch("infernis.services.cache.get_redis", return_value=None):
+            predictions, run_time = load_predictions_from_redis()
+
+        assert predictions == {}
+        assert run_time is None
+
+    def test_load_predictions_returns_empty_when_no_data(self):
+        from unittest.mock import MagicMock
+
+        from infernis.services.cache import load_predictions_from_redis
+
+        mock_redis = MagicMock()
+        mock_redis.get.return_value = None
+        mock_redis.scan_iter.return_value = iter([])
+
+        with patch("infernis.services.cache.get_redis", return_value=mock_redis):
+            predictions, run_time = load_predictions_from_redis()
+
+        assert predictions == {}
+        assert run_time is None

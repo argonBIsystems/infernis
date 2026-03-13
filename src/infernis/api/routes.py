@@ -573,6 +573,43 @@ _DEMO_SAMPLES = [
 ]
 
 
+def _find_nearest_demo(lat: float, lon: float) -> dict:
+    """Find the nearest demo test location by Euclidean distance."""
+    best = None
+    best_dist = float("inf")
+    for sample in _DEMO_SAMPLES:
+        slat = sample["location"]["lat"]
+        slon = sample["location"]["lon"]
+        dist = (lat - slat) ** 2 + (lon - slon) ** 2
+        if dist < best_dist:
+            best_dist = dist
+            best = sample
+    return best
+
+
+def _demo_risk_response(sample: dict) -> dict:
+    """Build a risk response from a demo sample."""
+    s = sample
+    return {
+        "location": s["location"],
+        "grid_cell_id": s["cell_id"],
+        "timestamp": "2026-07-15T14:00:00-07:00",
+        "risk": {
+            "score": s["risk"]["score"],
+            "level": s["risk"]["level"],
+            "color": DangerLevel.from_score(s["risk"]["score"]).color,
+        },
+        "fwi": s["fwi"],
+        "conditions": s["conditions"],
+        "context": s["context"],
+        "forecast_horizon": "24h",
+        "next_update": "2026-07-16T14:00:00-07:00",
+        "_demo": True,
+        "_nearest_test_location": s["name"],
+        "_description": s["description"],
+    }
+
+
 @router.get("/demo/risk")
 async def get_demo_risk():
     """Sample risk responses at all six danger levels. No API key required.
@@ -603,6 +640,27 @@ async def get_demo_risk():
             }
             for s in _DEMO_SAMPLES
         ],
+    }
+
+
+@router.get("/demo/risk/zones")
+async def get_demo_risk_zones():
+    """BEC zone risk summary using demo data. No API key required."""
+    zones = {}
+    for s in _DEMO_SAMPLES:
+        bec = s["context"]["bec_zone"]
+        zones[bec] = {
+            "bec_zone": bec,
+            "avg_risk_score": round(s["risk"]["score"], 3),
+            "max_risk_score": round(s["risk"]["score"], 3),
+            "level": s["risk"]["level"],
+            "cell_count": 1000,
+            "high_risk_cells": 50 if s["risk"]["score"] >= 0.6 else 0,
+        }
+    return {
+        "zones": list(zones.values()),
+        "timestamp": "2026-07-15T14:00:00-07:00",
+        "_demo": True,
     }
 
 
@@ -637,6 +695,13 @@ async def get_demo_risk_by_level(level: str):
         "_demo": True,
         "_description": s["description"],
     }
+
+
+@router.get("/demo/risk/{lat}/{lon}")
+async def get_demo_risk_by_coords(lat: float, lon: float):
+    """Point risk query using demo data. Snaps to nearest test location. No API key required."""
+    sample = _find_nearest_demo(lat, lon)
+    return _demo_risk_response(sample)
 
 
 @router.get("/demo/forecast")
@@ -750,6 +815,76 @@ async def get_demo_forecast():
         "_demo": True,
         "_description": "Simulated 10-day drying event near Kamloops. "
         "Risk ramps from LOW to VERY_HIGH (day 7), then eases as a front moves in.",
+    }
+
+
+@router.get("/demo/forecast/{lat}/{lon}")
+async def get_demo_forecast_by_coords(lat: float, lon: float):
+    """Multi-day forecast using demo data. Snaps to nearest test location. No API key required."""
+    import math
+    from datetime import date, timedelta
+
+    sample = _find_nearest_demo(lat, lon)
+    base = date(2026, 7, 15)
+    base_score = sample["risk"]["score"]
+
+    days = []
+    for i in range(1, 11):
+        variation = 0.05 * math.sin(i * 0.7)
+        score = max(0.0, min(1.0, base_score + variation * (1 + i * 0.1)))
+        level = DangerLevel.from_score(score)
+        dl_num = list(DangerLevel).index(level) + 1
+        conf = round(0.95**i, 4)
+        days.append(
+            {
+                "valid_date": (base + timedelta(days=i)).isoformat(),
+                "lead_day": i,
+                "risk_score": round(score, 4),
+                "danger_level": dl_num,
+                "danger_label": level.value,
+                "confidence": conf,
+                "fwi": sample["fwi"],
+                "data_source": "HRDPS" if i <= 2 else "GDPS",
+            }
+        )
+
+    return {
+        "latitude": sample["location"]["lat"],
+        "longitude": sample["location"]["lon"],
+        "cell_id": sample["cell_id"],
+        "base_date": base.isoformat(),
+        "forecast": days,
+        "generated_at": "2026-07-15T14:00:00-07:00",
+        "_demo": True,
+        "_nearest_test_location": sample["name"],
+    }
+
+
+@router.get("/demo/fwi/{lat}/{lon}")
+async def get_demo_fwi_by_coords(lat: float, lon: float):
+    """Raw FWI components using demo data. Snaps to nearest test location. No API key required."""
+    sample = _find_nearest_demo(lat, lon)
+    return {
+        "location": sample["location"],
+        "grid_cell_id": sample["cell_id"],
+        "timestamp": "2026-07-15T14:00:00-07:00",
+        "fwi": sample["fwi"],
+        "_demo": True,
+        "_nearest_test_location": sample["name"],
+    }
+
+
+@router.get("/demo/conditions/{lat}/{lon}")
+async def get_demo_conditions_by_coords(lat: float, lon: float):
+    """Weather conditions using demo data. Snaps to nearest test location. No API key required."""
+    sample = _find_nearest_demo(lat, lon)
+    return {
+        "location": sample["location"],
+        "grid_cell_id": sample["cell_id"],
+        "timestamp": "2026-07-15T14:00:00-07:00",
+        "conditions": sample["conditions"],
+        "_demo": True,
+        "_nearest_test_location": sample["name"],
     }
 
 

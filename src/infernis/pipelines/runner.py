@@ -162,6 +162,9 @@ def _run_forecast_pipeline(
         if forecasts:
             set_forecast_cache(forecasts, target_date.isoformat())
             _save_forecasts_to_db(forecasts, target_date)
+            from infernis.services.cache import cache_forecasts as _cache_fc
+
+            _cache_fc(forecasts, target_date.isoformat())
             logger.info("Forecast pipeline complete: %d cells", len(forecasts))
     except Exception as e:
         logger.error("Forecast pipeline failed: %s", e, exc_info=True)

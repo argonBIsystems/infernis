@@ -107,6 +107,93 @@ def load_fwi_state() -> dict[str, dict]:
     return {cell_id: json.loads(state) for cell_id, state in raw.items()}
 
 
+def load_predictions_from_redis() -> tuple[dict, str | None]:
+    """Load all predictions from Redis. Returns (predictions_dict, run_time)."""
+    r = get_redis()
+    if r is None:
+        return {}, None
+
+    run_time = r.get("pred:last_run")
+    if not run_time:
+        return {}, None
+
+    predictions = {}
+    BATCH_SIZE = 5000
+    keys = []
+    for key in r.scan_iter("pred:latest:*", count=BATCH_SIZE):
+        keys.append(key)
+
+    for batch_start in range(0, len(keys), BATCH_SIZE):
+        batch_keys = keys[batch_start : batch_start + BATCH_SIZE]
+        pipe = r.pipeline()
+        for k in batch_keys:
+            pipe.get(k)
+        values = pipe.execute()
+        for k, v in zip(batch_keys, values):
+            if v:
+                cell_id = k.removeprefix("pred:latest:")
+                predictions[cell_id] = json.loads(v)
+
+    logger.info("Loaded %d predictions from Redis (last run: %s)", len(predictions), run_time)
+    return predictions, run_time
+
+
+def cache_forecasts(
+    forecasts: dict[str, list[dict]], base_date: str, ttl_seconds: int = 172800
+) -> int:
+    """Write forecasts to Redis with TTL (default 48h)."""
+    r = get_redis()
+    if r is None:
+        return 0
+
+    BATCH_SIZE = 10_000
+    count = 0
+    items = list(forecasts.items())
+
+    for batch_start in range(0, len(items), BATCH_SIZE):
+        batch = items[batch_start : batch_start + BATCH_SIZE]
+        pipe = r.pipeline()
+        for cell_id, days in batch:
+            pipe.setex(f"forecast:latest:{cell_id}", ttl_seconds, json.dumps(days))
+            count += 1
+        pipe.execute()
+
+    r.setex("forecast:base_date", ttl_seconds, base_date)
+    logger.info("Cached %d forecast cells to Redis (TTL=%ds)", count, ttl_seconds)
+    return count
+
+
+def load_forecasts_from_redis() -> tuple[dict[str, list[dict]], str | None]:
+    """Load all forecasts from Redis. Returns (forecasts_dict, base_date)."""
+    r = get_redis()
+    if r is None:
+        return {}, None
+
+    base_date = r.get("forecast:base_date")
+    if not base_date:
+        return {}, None
+
+    forecasts = {}
+    BATCH_SIZE = 5000
+    keys = []
+    for key in r.scan_iter("forecast:latest:*", count=BATCH_SIZE):
+        keys.append(key)
+
+    for batch_start in range(0, len(keys), BATCH_SIZE):
+        batch_keys = keys[batch_start : batch_start + BATCH_SIZE]
+        pipe = r.pipeline()
+        for k in batch_keys:
+            pipe.get(k)
+        values = pipe.execute()
+        for k, v in zip(batch_keys, values):
+            if v:
+                cell_id = k.removeprefix("forecast:latest:")
+                forecasts[cell_id] = json.loads(v)
+
+    logger.info("Loaded %d forecast cells from Redis (base date: %s)", len(forecasts), base_date)
+    return forecasts, base_date
+
+
 def redis_healthy() -> bool:
     """Check if Redis is reachable."""
     r = get_redis()

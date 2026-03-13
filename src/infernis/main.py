@@ -60,6 +60,47 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Firebase initialization skipped: %s", e)
 
+    # Load cached predictions from Redis (survive deploys without re-running pipeline)
+    try:
+        from infernis.pipelines.runner import _load_grid
+        from infernis.services.cache import load_forecasts_from_redis, load_predictions_from_redis
+
+        predictions, run_time = load_predictions_from_redis()
+        if predictions:
+            grid_df = _load_grid()
+            if grid_df is not None:
+                grid_cells = {
+                    row["cell_id"]: {
+                        "lat": row["lat"],
+                        "lon": row["lon"],
+                        "bec_zone": row.get("bec_zone", ""),
+                        "fuel_type": row.get("fuel_type", ""),
+                        "elevation_m": row.get("elevation_m", 0),
+                    }
+                    for _, row in grid_df.iterrows()
+                }
+                from infernis.api.routes import set_predictions_cache
+
+                set_predictions_cache(predictions, grid_cells, run_time)
+                logger.info(
+                    "Loaded %d predictions from Redis (last run: %s) — API ready",
+                    len(predictions),
+                    run_time,
+                )
+            else:
+                logger.warning("Grid could not be loaded — skipping Redis cache restore")
+        else:
+            logger.info("Redis cache empty — API will be available after first pipeline run")
+
+        forecasts, base_date = load_forecasts_from_redis()
+        if forecasts:
+            from infernis.api.routes import set_forecast_cache
+
+            set_forecast_cache(forecasts, base_date)
+            logger.info("Loaded %d forecast cells from Redis (base: %s)", len(forecasts), base_date)
+    except Exception as e:
+        logger.warning("Redis cache restore failed: %s — API will initialize from pipeline", e)
+
     # Start the daily pipeline scheduler (can be disabled to prevent OOM in
     # memory-constrained containers like Railway Hobby 8 GB)
     if settings.pipeline_enabled:

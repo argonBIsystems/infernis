@@ -238,3 +238,46 @@ class TestDemoEndpoints:
         data = r.json()
         assert len(data["forecast"]) == 10
         assert data["_demo"] is True
+
+    def test_demo_risk_by_coords_snaps_to_nearest(self, client):
+        r = client.get("/v1/demo/risk/50.5/-120.0")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["_demo"] is True
+        assert data["risk"]["level"] in [
+            "VERY_LOW",
+            "LOW",
+            "MODERATE",
+            "HIGH",
+            "VERY_HIGH",
+            "EXTREME",
+        ]
+        assert "grid_cell_id" in data
+
+    def test_demo_forecast_by_coords(self, client):
+        r = client.get("/v1/demo/forecast/50.67/-120.33")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["_demo"] is True
+        assert len(data["forecast"]) == 10
+
+    def test_demo_fwi_by_coords(self, client):
+        r = client.get("/v1/demo/fwi/50.67/-120.33")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["_demo"] is True
+        assert "fwi" in data
+
+    def test_demo_conditions_by_coords(self, client):
+        r = client.get("/v1/demo/conditions/50.67/-120.33")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["_demo"] is True
+        assert "conditions" in data
+
+    def test_demo_risk_zones(self, client):
+        r = client.get("/v1/demo/risk/zones")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["_demo"] is True
+        assert len(data["zones"]) > 0
