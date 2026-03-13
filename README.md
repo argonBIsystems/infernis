@@ -1,5 +1,9 @@
 <p align="center">
-  <img src="brand/infernis-logo.svg" alt="INFERNIS" width="420"/>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="brand/infernis-logo-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="brand/infernis-logo-light.svg">
+    <img src="brand/infernis-logo-dark.svg" alt="INFERNIS" width="320"/>
+  </picture>
 </p>
 
 <p align="center">
