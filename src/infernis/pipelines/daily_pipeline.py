@@ -46,6 +46,8 @@ class DailyPipeline:
         self._prev_fwi_state: dict[str, dict] = {}  # cell_id -> {ffmc, dmc, dc}
         self._pipeline_status = "success"  # tracks partial failures
         self._static_features: dict[str, np.ndarray] | None = None  # cached per-run
+        self._forecast_max_days = settings.forecast_max_days  # for combined Open-Meteo fetch
+        self._openmeteo_forecast_weather: dict | None = None  # shared with forecast pipeline
 
     def load_model(self, model_path: str | None = None):
         """Load the XGBoost model, CNN heatmap model, and Risk Fuser."""
@@ -287,11 +289,46 @@ class DailyPipeline:
         return self._risk_fuser.fuse_xgb_only(xgb_scores, bec_zones)
 
     def _fetch_weather(self, target_date, grid_lats, grid_lons) -> dict:
-        """Fetch ERA5 weather data for the grid.
+        """Fetch weather data for the grid.
 
-        ERA5 reanalysis has ~5 day lag, so we try progressively older dates
-        up to 7 days back. Falls back to synthetic data as last resort.
+        Primary: Open-Meteo GEM (same-day, ECCC's operational model).
+        Fallback: ERA5 reanalysis (5-day lag, but has soil moisture).
+        Soil moisture always comes from ERA5 (Open-Meteo GEM doesn't provide it).
         """
+        weather = None
+
+        # Primary: Open-Meteo GEM (same-day data)
+        try:
+            from infernis.pipelines.openmeteo_pipeline import OpenMeteoPipeline
+
+            om = OpenMeteoPipeline(max_days=self._forecast_max_days)
+            all_weather = om.fetch_forecast_weather(
+                grid_lats,
+                grid_lons,
+                forecast_days=self._forecast_max_days,
+                include_today=True,
+            )
+            if all_weather and 0 in all_weather:
+                weather = all_weather[0]
+                # Store forecast days for the forecast pipeline to reuse
+                self._openmeteo_forecast_weather = {k: v for k, v in all_weather.items() if k >= 1}
+                logger.info("Weather: Open-Meteo GEM (same-day data)")
+            else:
+                logger.warning("Open-Meteo returned no data for today")
+        except Exception as e:
+            logger.warning("Open-Meteo failed: %s — falling back to ERA5", e)
+
+        # Fallback: ERA5 (has everything including soil moisture, but 5-day lag)
+        if weather is None:
+            weather = self._fetch_era5_weather(target_date, grid_lats, grid_lons)
+
+        # Always merge ERA5 soil moisture (Open-Meteo GEM doesn't provide it)
+        self._merge_era5_soil_moisture(weather, target_date, grid_lats, grid_lons)
+
+        return weather
+
+    def _fetch_era5_weather(self, target_date, grid_lats, grid_lons) -> dict:
+        """Fetch ERA5 reanalysis weather (fallback, 5-day lag)."""
         from datetime import timedelta
 
         try:
@@ -299,7 +336,6 @@ class DailyPipeline:
 
             era5 = ERA5Pipeline()
 
-            # ERA5 has ~5 day lag; try up to 7 days back
             for days_back in range(0, 8):
                 try_date = target_date - timedelta(days=days_back)
                 try:
@@ -307,40 +343,65 @@ class DailyPipeline:
                     weather = era5.process_for_grid(filepath, grid_lats, grid_lons)
                     if days_back > 0:
                         logger.warning(
-                            "Using ERA5 data from %s (%d days old)",
+                            "ERA5 fallback: using data from %s (%d days old)",
                             try_date,
                             days_back,
                         )
-                        self._pipeline_status = "partial"
+                    else:
+                        logger.info("Weather: ERA5 (same-day)")
+                    self._pipeline_status = "partial"
                     return weather
                 except Exception as e:
                     logger.debug("ERA5 fetch failed for %s: %s", try_date, e)
                     continue
 
-            logger.error(
-                "ERA5 fetch failed for all dates %s to %s",
-                target_date,
-                target_date - timedelta(days=7),
-            )
+            logger.error("ERA5 fetch failed for all dates")
         except Exception as e:
             logger.error("ERA5 pipeline init failed: %s", e)
 
-        # Last resort: synthetic data with reasonable BC summer defaults
-        logger.warning("Using synthetic weather data")
+        # Last resort: no weather data at all — use conservative defaults
+        logger.error("All weather sources failed — using defaults")
         self._pipeline_status = "partial"
         n = len(grid_lats)
         return {
-            "temperature_c": np.full(n, 22.0),
-            "rh_pct": np.full(n, 45.0),
-            "wind_kmh": np.full(n, 12.0),
+            "temperature_c": np.full(n, 15.0),
+            "rh_pct": np.full(n, 60.0),
+            "wind_kmh": np.full(n, 10.0),
             "precip_24h_mm": np.zeros(n),
-            "soil_moisture_1": np.full(n, 0.25),
-            "soil_moisture_2": np.full(n, 0.28),
-            "soil_moisture_3": np.full(n, 0.30),
-            "soil_moisture_4": np.full(n, 0.32),
-            "evapotrans_mm": np.full(n, 3.0),
-            "wind_dir_deg": np.full(n, 225.0),  # SW wind typical in BC summer
+            "evapotrans_mm": np.full(n, 2.0),
+            "wind_dir_deg": np.full(n, 225.0),
         }
+
+    def _merge_era5_soil_moisture(self, weather, target_date, grid_lats, grid_lons):
+        """Fetch soil moisture from ERA5 and merge into weather dict.
+
+        ERA5 is the only reliable source for soil moisture at 4 depths.
+        The 5-day lag is acceptable because soil moisture changes slowly.
+        """
+        sm_keys = ["soil_moisture_1", "soil_moisture_2", "soil_moisture_3", "soil_moisture_4"]
+
+        # If weather already has soil moisture (from ERA5 fallback), keep it
+        if all(k in weather for k in sm_keys):
+            return
+
+        try:
+            era5_weather = self._fetch_era5_weather(target_date, grid_lats, grid_lons)
+            for key in sm_keys:
+                if key in era5_weather:
+                    weather[key] = era5_weather[key]
+            logger.info("Soil moisture: ERA5 (merged into Open-Meteo weather)")
+        except Exception as e:
+            logger.warning("ERA5 soil moisture failed: %s — using defaults", e)
+            n = len(grid_lats)
+            defaults = {
+                "soil_moisture_1": 0.25,
+                "soil_moisture_2": 0.28,
+                "soil_moisture_3": 0.30,
+                "soil_moisture_4": 0.32,
+            }
+            for key, val in defaults.items():
+                if key not in weather:
+                    weather[key] = np.full(n, val)
 
     def _compute_fwi(self, cell_ids, weather, target_date) -> dict[str, np.ndarray]:
         """Compute FWI for all cells using vectorized numpy operations.

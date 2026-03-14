@@ -60,6 +60,7 @@ class OpenMeteoPipeline:
         grid_lats: np.ndarray,
         grid_lons: np.ndarray,
         forecast_days: int | None = None,
+        include_today: bool = False,
     ) -> dict[int, dict[str, np.ndarray]]:
         """Fetch forecast weather for all grid cells.
 
@@ -67,11 +68,14 @@ class OpenMeteoPipeline:
             grid_lats: Array of latitudes for each grid cell.
             grid_lons: Array of longitudes for each grid cell.
             forecast_days: Number of forecast days (default: self.max_days).
+            include_today: If True, also populate result[0] with today's weather
+                          (index 0 from Open-Meteo response). Used by the daily
+                          pipeline for same-day weather instead of stale ERA5.
 
         Returns:
-            dict mapping lead_day (1-based) to weather feature dict.
-            Each weather dict has keys: temperature_c, rh_pct, wind_kmh,
-            wind_dir_deg, precip_24h_mm — each a 1D array of length n_cells.
+            dict mapping day index to weather feature dict.
+            Keys are 1-based (1=tomorrow, 2=day after, etc.).
+            If include_today=True, key 0 = today's weather.
         """
         import httpx
 
@@ -80,7 +84,8 @@ class OpenMeteoPipeline:
 
         # Pre-allocate result arrays for each day
         result: dict[int, dict[str, np.ndarray]] = {}
-        for day in range(1, forecast_days + 1):
+        start_day = 0 if include_today else 1
+        for day in range(start_day, forecast_days + 1):
             result[day] = {
                 "temperature_c": np.full(n_cells, np.nan),
                 "rh_pct": np.full(n_cells, np.nan),
@@ -120,7 +125,7 @@ class OpenMeteoPipeline:
                         batch_data = self._fetch_batch(
                             client, batch_lats, batch_lons, forecast_days
                         )
-                        self._fill_result(result, batch_data, start, end, forecast_days)
+                        self._fill_result(result, batch_data, start, end, forecast_days, start_day)
                         cells_fetched += end - start
                         success = True
                         break
@@ -164,7 +169,7 @@ class OpenMeteoPipeline:
 
         # Fill any NaN cells with reasonable defaults
         nan_total = 0
-        for day in range(1, forecast_days + 1):
+        for day in range(start_day, forecast_days + 1):
             weather = result[day]
             for key, default in [
                 ("temperature_c", 15.0),
@@ -243,6 +248,7 @@ class OpenMeteoPipeline:
         start: int,
         end: int,
         forecast_days: int,
+        start_day: int = 1,
     ):
         """Fill result arrays from a batch of Open-Meteo responses."""
         for i, location_data in enumerate(batch_data):
@@ -272,8 +278,8 @@ class OpenMeteoPipeline:
             ]
             sm_keys = ["soil_moisture_1", "soil_moisture_2", "soil_moisture_3", "soil_moisture_4"]
 
-            for day in range(1, forecast_days + 1):
-                # Index into the daily arrays: day 1 = index 1 (skip today at index 0)
+            for day in range(start_day, forecast_days + 1):
+                # Index into the daily arrays: day 0 = index 0 (today), day 1 = index 1, etc.
                 idx = day
                 if idx < len(temps) and temps[idx] is not None:
                     result[day]["temperature_c"][cell_idx] = temps[idx]

@@ -32,6 +32,7 @@ class ForecastPipeline:
         self._observed_snow: np.ndarray | None = None
         self._observed_lai: np.ndarray | None = None
         self._observed_soil_moisture: dict[str, np.ndarray] | None = None
+        self._prefetched_weather: dict[int, dict[str, np.ndarray]] | None = None
 
     def load_model(self, model_path: str | None = None):
         """Load XGBoost model for forecast inference."""
@@ -169,7 +170,15 @@ class ForecastPipeline:
     def _get_forecast_weather(
         self, target_date: date, grid_lats: np.ndarray, grid_lons: np.ndarray
     ) -> dict[int, dict[str, np.ndarray]]:
-        """Fetch forecast weather. Open-Meteo primary, GRIB2 fallback, synthetic last resort."""
+        """Fetch forecast weather. Uses prefetched data if available, else Open-Meteo, else GRIB2."""
+        # Check if daily pipeline already fetched forecast weather (combined fetch)
+        if self._prefetched_weather and len(self._prefetched_weather) >= self.max_days:
+            logger.info(
+                "Forecast weather: reusing prefetched Open-Meteo data (%d days)",
+                len(self._prefetched_weather),
+            )
+            return self._prefetched_weather
+
         # Primary: Open-Meteo API (lightweight JSON, same GEM model data)
         try:
             from infernis.pipelines.openmeteo_pipeline import OpenMeteoPipeline

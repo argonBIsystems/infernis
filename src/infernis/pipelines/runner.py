@@ -157,7 +157,7 @@ def _run_forecast_pipeline(
             forecast._observed_lai = satellite.get("lai")
             logger.info("Forecast: using today's observed NDVI/snow/LAI")
 
-        # Pass today's ERA5 soil moisture (Open-Meteo GEM returns None for soil moisture)
+        # Pass today's soil moisture (from ERA5 merge in daily pipeline)
         weather = getattr(daily_pipeline, "_last_weather", None)
         if weather:
             forecast._observed_soil_moisture = {
@@ -166,7 +166,16 @@ def _run_forecast_pipeline(
                 "soil_moisture_3": weather.get("soil_moisture_3"),
                 "soil_moisture_4": weather.get("soil_moisture_4"),
             }
-            logger.info("Forecast: using today's ERA5 soil moisture")
+            logger.info("Forecast: using today's soil moisture")
+
+        # Reuse Open-Meteo forecast weather from daily pipeline (avoids 2nd API fetch)
+        shared_weather = getattr(daily_pipeline, "_openmeteo_forecast_weather", None)
+        if shared_weather:
+            forecast._prefetched_weather = shared_weather
+            logger.info(
+                "Forecast: reusing Open-Meteo weather from daily pipeline (%d days)",
+                len(shared_weather),
+            )
 
         forecasts = forecast.run(
             grid_df=grid_df,
