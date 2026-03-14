@@ -134,3 +134,18 @@ class UserDB(Base):
     billing_cycle_start = Column(Date, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     is_active = Column(Boolean, default=True)
+
+
+class AlertDB(Base):
+    __tablename__ = "alerts"
+
+    id = Column(Integer, primary_key=True)
+    api_key_id = Column(Integer, nullable=False, index=True)
+    latitude = Column(Float, nullable=False)
+    longitude = Column(Float, nullable=False)
+    cell_id = Column(String(30), nullable=False)
+    threshold = Column(Float, nullable=False)
+    webhook_url = Column(String(500), nullable=False)
+    is_active = Column(Boolean, default=True)
+    last_triggered = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)

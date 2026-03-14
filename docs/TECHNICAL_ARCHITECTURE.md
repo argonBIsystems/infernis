@@ -2,9 +2,8 @@
 
 > How the system works under the hood.
 
-**Date**: 2026-02-16
+**Date**: 2026-03-14
 **Status**: Living Document
-**Companion**: See `docs/plans/2026-02-15-infernis-design.md` for product design and data source inventory.
 
 ---
 
@@ -39,11 +38,11 @@ Key architectural characteristics:
 
 - **FastAPI REST API** serves all external traffic. Auto-generated OpenAPI/Swagger docs are available at `/v1/docs`.
 - **PostgreSQL + PostGIS** stores the BC spatial grid, daily predictions, pipeline metadata, and API key records. PostGIS enables spatial queries (nearest-cell lookups, bounding-box filters, zone aggregations).
-- **Redis** acts as the hot cache layer for the current day's pre-computed predictions. The API reads from Redis first and falls back to PostGIS only on cache miss.
+- **Redis** acts as the hot cache layer for the current day's pre-computed predictions, forecasts, and grid cells. On startup, the API loads all three from Redis so it serves traffic immediately after deploys without waiting for the pipeline.
 - **Daily batch pipeline** runs at **14:00 PT** (after noon weather observations become available). It fetches weather data, computes fire weather indices, assembles feature matrices, runs ML inference across all grid cells, and writes results to both PostgreSQL and Redis.
-- **No real-time inference.** All predictions are pre-computed during the daily pipeline run. The API is a read-through cache over pre-computed results, which keeps response latencies low and operational complexity minimal.
+- **Pre-computed + real-time hybrid.** Daily predictions and forecasts are pre-computed during the pipeline run and served from cache. The API also has real-time endpoints for nearby active fires (from BC Wildfire Service) and webhook alert management.
 
-The system is designed to handle 2,113,524 grid cells at 1km resolution (Phase 3, complete) on a single Railway instance, with legacy support for 84,107 cells at 5km.
+The system supports 1km (~2.1M cells) and 5km (~84,535 cells) resolutions, deployed on a single Railway instance.
 
 ---
 
@@ -183,11 +182,11 @@ Data products fetched via GEE:
 
 | Product | Source | Resolution | Temporal | Use |
 |---------|--------|-----------|----------|-----|
-| NDVI | MODIS MOD13A1 (or Sentinel-2 in Phase 3) | 500m / 16-day composite | Latest available | Vegetation greenness / dryness |
+| NDVI | MODIS MOD13A1 | 500m / 16-day composite | Latest available | Vegetation greenness / dryness |
 | Snow cover | MODIS MOD10A1 | 500m / daily | Current day | Binary snow presence per cell |
 | Elevation | CDEM via GEE Assets | ~20m | Static | Elevation, slope, aspect, hillshade |
-| EVI | MODIS MOD13A1 | 500m / 16-day | Latest available | Enhanced vegetation index (Phase 2) |
-| LAI | MODIS MOD15A2H | 500m / 8-day | Latest available | Leaf area index (Phase 2) |
+| EVI | MODIS MOD13A1 | 500m / 16-day | Latest available | Enhanced vegetation index |
+| LAI | MODIS MOD15A2H | 500m / 8-day | Latest available | Leaf area index |
 
 GEE computations are submitted as batch `reduceRegions` calls over the BC grid FeatureCollection. Results are exported as CSV/JSON and parsed into the feature matrix. The pipeline only re-fetches satellite products when new composites are available (e.g., MODIS NDVI updates every 16 days).
 
@@ -241,7 +240,7 @@ Each grid cell is represented by a feature vector of 28 features:
 | Temporal | day-of-year sine, day-of-year cosine | 2 |
 | Lightning | lightning density (24h), lightning density (72h) | 2 |
 
-The feature vector is assembled by DATA FORGE into a NumPy array of shape `[N_cells, N_features]` -- `[2113524, 28]` at 1km resolution (or `[84107, 28]` at 5km).
+The feature vector is assembled by DATA FORGE into a NumPy array of shape `[N_cells, N_features]` -- `[2113524, 28]` at 1km resolution (or `[84535, 28]` at 5km).
 
 Day-of-year is encoded as sine and cosine components to capture fire seasonality as a continuous cyclical feature: `doy_sin = sin(2 * pi * doy / 365)`, `doy_cos = cos(2 * pi * doy / 365)`.
 
@@ -287,7 +286,7 @@ Model path: `models/fire_core_1km_v1.json` for 1km, `models/fire_core_v1.json` f
 
 ---
 
-### HEATMAP ENGINE (U-Net CNN) [Phase 2]
+### HEATMAP ENGINE (U-Net CNN)
 
 The HEATMAP ENGINE is a convolutional neural network that captures spatial patterns that a per-cell classifier like XGBoost cannot learn: spatial autocorrelation (adjacent dry zones compound risk), topographic fire corridors (valleys and ridges that channel fire), and neighborhood fuel connectivity.
 
@@ -405,7 +404,7 @@ Where:
 
 Per-BEC-zone logistic regression coefficients are learned on a held-out validation set. For each of BC's 13 calibrated BEC zones, a separate logistic regression is fit on paired (logit(xgb_prob), logit(cnn_value), actual_fire) samples from that zone. This allows the fuser to weight the models differently across ecosystems -- for example, the CNN may contribute more in zones with strong spatial fire patterns, while XGBoost may dominate in zones where point-level weather features are more predictive.
 
-Coefficients are re-learned whenever either model is retrained. In Phase 1 (XGBoost only), the fuser passes through the XGBoost probability directly.
+Coefficients are re-learned whenever either model is retrained. If only one model is available, the fuser passes through that model's probability directly.
 
 #### Regional Calibration
 
@@ -455,7 +454,7 @@ Threshold boundaries are the defaults. Per-BEC-zone calibration may shift these 
 
 BC is covered by an **equal-area grid** in **EPSG:3005 (BC Albers)** projection. This is the standard projected coordinate system for British Columbia, maintaining equal area across the province so that each grid cell represents the same physical area regardless of latitude.
 
-At 1km resolution, the grid covers BC with **2,113,524 land cells** (84,107 at 5km). The grid is generated by:
+At 1km resolution, the grid covers BC with **2,113,524 land cells** (84,535 at 5km). The grid is generated by:
 
 1. Computing the BC Albers bounding box of the provincial boundary polygon.
 2. Dividing the bounding box into 5,000m x 5,000m square cells.
@@ -499,10 +498,10 @@ Each cell has the following static attributes pre-computed during grid initializ
 
 ### Resolution Scaling
 
-| Phase | Resolution | Cell Count | Cell ID Prefix |
-|-------|-----------|------------|----------------|
-| Phase 1-2 | 5km | 84,107 | `BC-5K-` |
-| Phase 3 (current) | 1km | 2,113,524 | `BC-1K-` |
+| Resolution | Cell Count | Cell ID Prefix |
+|-----------|------------|----------------|
+| 5km | 84,535 | `BC-5K-` |
+| 1km (current) | 2,113,524 | `BC-1K-` |
 
 ---
 
@@ -549,7 +548,7 @@ CREATE TABLE predictions (
     score           REAL NOT NULL,                -- fused INFERNIS score (0-1)
     level           VARCHAR(15) NOT NULL,         -- danger level enum
     fire_core_prob  REAL,                         -- raw XGBoost probability
-    heatmap_value   REAL,                         -- CNN heatmap value (Phase 2)
+    heatmap_value   REAL,                         -- CNN heatmap value
 
     -- FWI components
     ffmc            REAL,
@@ -662,6 +661,34 @@ CREATE INDEX idx_users_email ON users (email);
 CREATE INDEX idx_users_api_key_id ON users (api_key_id);
 ```
 
+### `alerts`
+
+Stores webhook alert subscriptions for threshold-based notifications.
+
+```sql
+CREATE TABLE alerts (
+    id              SERIAL PRIMARY KEY,
+    api_key_id      INTEGER NOT NULL REFERENCES api_keys(id),
+    latitude        DOUBLE PRECISION NOT NULL,
+    longitude       DOUBLE PRECISION NOT NULL,
+    cell_id         VARCHAR(20),
+    threshold       REAL NOT NULL,               -- risk score threshold (0-1)
+    webhook_url     TEXT NOT NULL,                -- URL to POST alert payload
+    is_active       BOOLEAN DEFAULT TRUE,
+    last_triggered  TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_alerts_api_key_id ON alerts (api_key_id);
+CREATE INDEX idx_alerts_active ON alerts (is_active) WHERE is_active = TRUE;
+```
+
+### Table Notes
+
+- **`grid_cells`**: Currently empty in production. The grid is generated in memory at startup and cached in Redis (see Caching Strategy). The table schema exists for future use.
+- **`fire_history`**: Currently empty. Historical fire data has not been loaded yet.
+- **`predictions`**: ~3.8M prediction rows and ~6.8M forecast prediction rows as of current deployment.
+
 ### Schema Migrations
 
 Database schema is managed via **Alembic**. Migration files are stored in `alembic/versions/`. Migrations are run automatically on deployment via the Railway start command or manually via `alembic upgrade head`.
@@ -671,6 +698,24 @@ Database schema is managed via **Alembic**. Migration files are stored in `alemb
 ## Caching Strategy
 
 Redis serves as the hot cache layer between the daily pipeline and the API. The goal is to serve 100% of normal API requests from Redis without touching PostgreSQL.
+
+### Cached Data
+
+Redis now caches four types of data:
+
+| Cache | Key Pattern | Description |
+|-------|-------------|-------------|
+| Predictions | `pred:{date}:{cell_id}` | Current day's risk predictions |
+| Forecasts | `forecast:latest:{cell_id}` | Multi-day forecast per cell |
+| Forecast metadata | `forecast:base_date` | Base date of the current forecast |
+| Grid cells | `grid:cells` (hash map) | All grid cell metadata (lat, lon, BEC zone, fuel type, etc.) |
+| FWI state | `fwi:state:{cell_id}` | Carried-forward FWI moisture codes |
+
+### Startup Cache Restore
+
+On startup (`main.py` lifespan), the application loads predictions, forecasts, and grid cells from Redis before accepting traffic. This eliminates the 503 "initializing" state after deploys -- the API serves traffic immediately after a deploy without waiting for the pipeline to run.
+
+Grid cells are cached separately (key: `grid:cells` hash) because generating them requires geopandas, which OOM'd on Railway's memory-constrained instances.
 
 ### Key Structure
 
@@ -688,6 +733,8 @@ All prediction keys are set with a **48-hour TTL**. This ensures:
 - The current day's predictions are always available.
 - The previous day's predictions remain available as a fallback if the current day's pipeline fails.
 - Stale data is automatically evicted without manual cleanup.
+
+Forecast keys do not use TTL -- they are overwritten each pipeline run.
 
 ### Write Pattern
 
@@ -738,20 +785,14 @@ API keys are prefixed with `ifn_live_` (production) or `ifn_test_` (development)
 
 ### Rate Limiting
 
-Rate limits are enforced per API key based on tier:
+Rate limits are enforced per API key based on daily request count. All endpoints are available to all users — there are no feature restrictions. One tier: **Free** (50 requests/day). Contact `hello@argonbi.com` for increased limits.
 
-| Tier | Daily Limit | Grid Queries | Heatmap Access | History Access |
-|------|------------|-------------|---------------|----------------|
-| Free | 50 requests/day | No | No | No |
-| Pro | 10,000 requests/day | Yes | Yes | Yes |
-| Enterprise | Unlimited | Yes | Yes | Yes |
-
-Rate limit state is tracked in the `api_keys.requests_today` column, reset daily at 00:00 UTC. Rate limit headers are included in all responses:
+Rate limit state is tracked in the `api_keys.requests_today` column, reset daily at midnight PST. The middleware reads `daily_limit` from the database per-key, so individual keys can be upgraded without code changes. Rate limit headers are included in all responses:
 
 ```
-X-RateLimit-Limit: 5
-X-RateLimit-Remaining: 3
-X-RateLimit-Reset: 1721088000
+X-RateLimit-Limit: 50
+X-RateLimit-Remaining: 47
+X-RateLimit-Reset: midnight PST
 ```
 
 ### Endpoints
@@ -769,7 +810,7 @@ Point query. Returns the complete risk assessment for the nearest grid cell.
 
 **Response:** JSON object containing location, grid cell ID, risk score and level, model component scores, FWI components, weather conditions, vegetation state, and context (BEC zone, fuel type, elevation).
 
-**Tiers:** Free, Pro, Enterprise
+**Auth:** API key required
 
 ---
 
@@ -779,12 +820,12 @@ Area query. Returns a GeoJSON FeatureCollection of risk predictions for all cell
 
 **Query Parameters:**
 - `bbox` (required): `west,south,east,north` in decimal degrees
-- `resolution` (optional): `5km` (default) or `1km` (Phase 3)
+- `resolution` (optional): `5km` (default) or `1km`
 - `level` (optional): Filter by danger level (e.g., `HIGH,VERY_HIGH,EXTREME`)
 
 **Response:** GeoJSON FeatureCollection. Each Feature is a grid cell polygon with risk properties.
 
-**Tiers:** Pro, Enterprise
+**Auth:** API key required
 
 ---
 
@@ -799,7 +840,7 @@ Returns a rendered heatmap image or raster from the CNN HEATMAP ENGINE.
 
 **Response:** `image/png` or `image/tiff` binary data. GeoTIFF includes georeferencing metadata.
 
-**Tiers:** Pro, Enterprise. Available in Phase 2+.
+**Auth:** API key required
 
 ---
 
@@ -809,7 +850,7 @@ Returns aggregate risk levels for all BC fire zones / BEC zones.
 
 **Response:** JSON array of zone objects, each containing zone code, zone name, current aggregate danger level, number of cells at each level, and the highest individual cell score.
 
-**Tiers:** Free, Pro, Enterprise
+**Auth:** API key required
 
 ---
 
@@ -819,7 +860,7 @@ Returns raw FWI components for the nearest grid cell.
 
 **Response:** JSON object with `ffmc`, `dmc`, `dc`, `isi`, `bui`, `fwi` values.
 
-**Tiers:** Free, Pro, Enterprise
+**Auth:** API key required
 
 ---
 
@@ -829,7 +870,7 @@ Returns current weather and environmental conditions for the nearest grid cell.
 
 **Response:** JSON object with temperature, relative humidity, wind speed/direction, precipitation, soil moisture, NDVI, snow cover.
 
-**Tiers:** Free, Pro, Enterprise
+**Auth:** API key required
 
 ---
 
@@ -856,7 +897,7 @@ Returns pipeline health and system status. No authentication required.
 }
 ```
 
-**Tiers:** Public (no API key required)
+**Auth:** Public (no API key required)
 
 ---
 
@@ -866,7 +907,7 @@ Returns the BC coverage boundary and grid metadata.
 
 **Response:** GeoJSON Feature representing the BC provincial boundary, plus metadata about the grid (cell count, resolution, CRS).
 
-**Tiers:** Public (no API key required)
+**Auth:** Public (no API key required)
 
 ---
 
@@ -875,6 +916,100 @@ Returns the BC coverage boundary and grid metadata.
 Lightweight health check for load balancers and Railway.
 
 **Response:** `{"status": "ok", "version": "0.1.0"}`
+
+---
+
+#### `POST /v1/risk/batch`
+
+Batch query. Returns risk assessments for up to 50 locations in a single request.
+
+**Request Body:** JSON array of `{lat, lon}` objects (max 50).
+
+**Response:** JSON array of risk assessment objects (same format as point query).
+
+**Auth:** API key required
+
+---
+
+#### `GET /v1/risk/history/{lat}/{lon}`
+
+Returns 90 days of daily risk history from the database for the nearest grid cell.
+
+**Response:** JSON array of daily risk records with score, level, and date.
+
+**Auth:** API key required
+
+---
+
+#### `GET /v1/fires/near/{lat}/{lon}`
+
+Returns active fires near the given location from the BC Wildfire Service ArcGIS API. Real-time data, not cached.
+
+**Response:** JSON array of active fire objects with location, status, and metadata.
+
+**Auth:** API key required
+
+---
+
+#### `POST /v1/alerts`
+
+Register a webhook alert. When the risk score for the specified location exceeds the threshold, a JSON payload is POSTed to the webhook URL.
+
+**Request Body:** `{lat, lon, threshold, webhook_url}`
+
+**Auth:** API key required
+
+---
+
+#### `GET /v1/alerts`
+
+List all active webhook alerts for the authenticated API key.
+
+**Auth:** API key required
+
+---
+
+#### `DELETE /v1/alerts/{id}`
+
+Deactivate a webhook alert.
+
+**Auth:** API key required
+
+---
+
+#### `GET /v1/tiles/{z}/{x}/{y}.png`
+
+Slippy map tiles for rendering risk data on web maps. Returns pre-rendered PNG tiles.
+
+**Auth:** Public (no API key required)
+
+---
+
+#### Demo Endpoints
+
+Demo endpoints return mock data for integration testing. They are public and require no API key. All snap to the nearest of 6 predefined test locations.
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /v1/demo/risk/{lat}/{lon}` | Mock risk for nearest test location |
+| `GET /v1/demo/forecast/{lat}/{lon}` | Mock forecast for nearest test location |
+| `GET /v1/demo/fwi/{lat}/{lon}` | Mock FWI data for nearest test location |
+| `GET /v1/demo/conditions/{lat}/{lon}` | Mock conditions for nearest test location |
+| `GET /v1/demo/risk/zones` | Mock zone-level risk for all zones |
+| `GET /v1/demo/risk` | All 6 danger levels with example data |
+| `GET /v1/demo/risk/{level}` | Single danger level by name |
+
+**Auth:** Public (no API key required)
+
+---
+
+### New Response Fields
+
+Recent additions to existing endpoint responses:
+
+- **Risk response**: Now includes `change_24h` (score delta vs yesterday's prediction).
+- **Forecast response**: Now includes `temperature_c`, `rh_pct`, `wind_kmh`, `precip_24h_mm` per forecast day.
+- **Grid GeoJSON**: Features now include a `color` hex string in properties for direct rendering.
 
 ---
 
@@ -888,12 +1023,14 @@ All JSON responses include a top-level `meta` field with request ID, timestamp, 
 
 ### Pre-Computed Design
 
-A critical architectural decision: **all predictions are pre-computed during the daily pipeline run.** The API performs zero ML inference at request time. This means:
+A critical architectural decision: **risk predictions and forecasts are pre-computed during the daily pipeline run.** The API performs zero ML inference at request time for these endpoints. This means:
 
 - Response latency is bounded by cache/database lookup time, not model inference time.
 - The API can serve thousands of concurrent requests without GPU/CPU inference contention.
 - The system can serve predictions even if the model loading or inference code has a bug, as long as the last successful pipeline run is cached.
 - The tradeoff is that predictions are at most 24 hours stale. For wildfire risk assessment at a daily cadence, this is acceptable.
+
+Real-time endpoints (nearby fires, alert management) make external API calls or database queries at request time but do not involve ML inference.
 
 ---
 
@@ -937,10 +1074,18 @@ Step  Description                                          Duration (est.)
 11    Batch-cache results to Redis                           <5 sec
       (Redis pipeline with ~84,500 SETEX commands)
 
-12    Update pipeline_runs table with status                 <1 sec
+12    Run forecast pipeline                                  1-3 min
+      (fetch multi-day weather from Open-Meteo, run
+       inference for each forecast day)
+
+13    Check webhook alerts                                   <5 sec
+      (compare cell scores vs alert thresholds,
+       POST to webhook URLs if exceeded)
+
+14    Update pipeline_runs table with status                 <1 sec
       (record timing, cell count, model version, errors)
 
-Total estimated pipeline duration: 5-12 minutes
+Total estimated pipeline duration: 7-15 minutes
 ```
 
 ### Error Handling
@@ -960,6 +1105,29 @@ FWI moisture codes (FFMC, DMC, DC) are cumulative and carry forward daily. The p
 
 At fire season startup (approximately April 1), standard default values are used: FFMC=85.0, DMC=6.0, DC=15.0. During the off-season (November-March), the pipeline may run at reduced frequency or maintain codes at winter defaults.
 
+### Forecast Pipeline
+
+After the daily predictions complete, the forecast pipeline generates multi-day risk forecasts:
+
+1. **Weather source**: The primary weather source for forecasts is the **Open-Meteo API** using the `gem_seamless` model, which blends ECCC GEM/HRDPS/GDPS data. This provides temperature, relative humidity, wind speed, and precipitation forecasts via a simple REST API call (no file downloads).
+2. **Fallback**: GRIB2 downloads from the MSC Datamart (`dd.weather.gc.ca`) serve as the fallback weather source if Open-Meteo is unavailable.
+3. **No synthetic fallback**: The synthetic weather fallback has been removed. If all weather sources fail, the forecast is skipped entirely for that day.
+4. **Carried-forward features**: Soil moisture is carried forward from the ERA5 daily pipeline because Open-Meteo GEM does not provide it. NDVI, snow cover, and LAI are carried forward from today's GEE observations.
+5. **Inference**: For each forecast day, the pipeline assembles a feature matrix using forecast weather + carried-forward features, runs XGBoost inference, and produces per-cell risk scores.
+6. **Confidence decay**: Forecast confidence decays at a rate of 0.95 per day to reflect increasing uncertainty.
+7. **Weather in response**: Forecast responses include the weather data used (`temperature_c`, `rh_pct`, `wind_kmh`, `precip_24h_mm`) alongside the risk score for each day.
+8. **Caching**: Forecast results are cached in Redis under `forecast:latest:{cell_id}` keys. The `forecast:base_date` key tracks the date the forecast was generated.
+
+### Webhook Alert Pipeline
+
+After the daily pipeline completes (predictions + forecast), `_check_alerts()` runs:
+
+1. Iterates all active alerts from the `alerts` table.
+2. For each alert, looks up the cell's current risk score.
+3. If the score exceeds the alert's threshold, POSTs a JSON payload to the `webhook_url` with risk data (score, level, location, cell_id, prediction_date).
+4. Updates `last_triggered` timestamp on the alert record.
+5. Logs the count of triggered and failed alerts.
+
 ---
 
 ## Tech Stack
@@ -977,7 +1145,7 @@ At fire season startup (approximately April 1), standard default values are used
 | Geospatial -- Raster | Rasterio | >=1.3 | GDAL-backed raster I/O, reprojection, resampling |
 | Geometry | Shapely | >=2.0 | Geometric operations (intersections, buffers, containment) |
 | Projection | pyproj | >=3.6 | CRS transformations between EPSG:3005 and EPSG:4326 |
-| NetCDF / GRIB | xarray + netCDF4 | >=2024.1 / >=1.7 | Reading ERA5 NetCDF4 and GRIB2 weather files |
+| NetCDF / GRIB | xarray + netCDF4 + cfgrib | >=2024.1 / >=1.7 | Reading ERA5 NetCDF4 and GRIB2 weather files (GRIB2/cfgrib used as fallback only) |
 | Numerics | NumPy | >=1.26 | Array operations, feature matrix assembly |
 | Data Frames | pandas | >=2.2 | Tabular data manipulation |
 | ORM | SQLAlchemy | >=2.0 | Database abstraction, async session support |
@@ -986,7 +1154,8 @@ At fire season startup (approximately April 1), standard default values are used
 | Migrations | Alembic | >=1.13 | Schema versioning and migration management |
 | Cache Client | redis-py | >=5.0 | Redis client with pipeline (batch) support |
 | Scheduler | APScheduler | >=3.10 | In-process cron-style scheduling for the daily pipeline |
-| HTTP Client | httpx | >=0.27 | Async HTTP client for MSC Datamart and external API calls |
+| Forecast Weather | Open-Meteo API (GEM seamless) | -- | Primary forecast weather source (ECCC GEM/HRDPS/GDPS blend) |
+| HTTP Client | httpx | >=0.27 | Async HTTP client for Open-Meteo, BCWS fires, MSC Datamart, and external API calls |
 | Serialization | joblib | >=1.3 | Efficient serialization for large NumPy arrays (pipeline intermediates) |
 | Calibration | scikit-learn | >=1.4 | Platt scaling (CalibratedClassifierCV), evaluation metrics |
 | Spatial Index | scipy | >=1.12 | KDTree for nearest-cell lookups |
@@ -994,6 +1163,20 @@ At fire season startup (approximately April 1), standard default values are used
 | Configuration | pydantic-settings | >=2.0 | Typed environment variable parsing |
 | Error Tracking | sentry-sdk | >=2.0 | Exception tracking and alerting |
 | Hosting | Railway | -- | Managed platform with PostgreSQL, Redis, and Docker support |
+
+### Route File Organization
+
+API routes are split across multiple files in `src/infernis/api/`:
+
+| File | Responsibility |
+|------|----------------|
+| `api/routes.py` | Core risk, forecast, FWI, conditions, zones, grid, heatmap, demo endpoints |
+| `api/tiles_routes.py` | Map tile rendering (`/v1/tiles/`) |
+| `api/batch_routes.py` | Batch risk queries (`/v1/risk/batch`) |
+| `api/history_routes.py` | Historical risk from DB (`/v1/risk/history/`) |
+| `api/fires_routes.py` | Nearby fires from BCWS (`/v1/fires/near/`) |
+| `api/alerts_routes.py` | Webhook alert CRUD (`/v1/alerts`) |
+| `api/dashboard_routes.py` | Firebase dashboard (private repo only) |
 
 ### System-Level Dependencies (Dockerfile)
 
@@ -1070,11 +1253,20 @@ Railway is configured to probe the `/health` endpoint:
 ```json
 {
   "healthcheckPath": "/health",
-  "healthcheckTimeout": 10
+  "healthcheckTimeout": 60
 }
 ```
 
 The health check returns HTTP 200 with `{"status": "ok"}` when the application is ready to serve requests. The application reports unhealthy if it cannot connect to PostgreSQL or Redis on startup.
+
+### Zero-Downtime Deploys
+
+On startup, the API restores predictions, forecasts, and grid cells from Redis before accepting traffic. This means deploys do not result in a period of 503 responses -- the new instance can serve traffic immediately from the Redis cache populated by the previous instance's pipeline run.
+
+### Pre-Deploy and Startup
+
+- **Pre-deploy command**: `alembic upgrade head` (runs database migrations before the new instance starts)
+- **Pipeline on startup**: If `INFERNIS_PIPELINE_RUN_ON_STARTUP=true`, the daily pipeline runs in a background thread immediately after startup. This is useful for initial deployment or recovery scenarios.
 
 ### Railway.json
 
@@ -1087,7 +1279,7 @@ The health check returns HTTP 200 with `{"status": "ok"}` when the application i
   "deploy": {
     "startCommand": "uvicorn infernis.main:app --host 0.0.0.0 --port $PORT",
     "healthcheckPath": "/health",
-    "healthcheckTimeout": 10,
+    "healthcheckTimeout": 60,
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 3
   }
@@ -1157,7 +1349,7 @@ Drift is monitored by comparing predicted vs. actual fire occurrences each fire 
 
 ### Rate Limiting
 
-Rate limits are enforced at the application level using the `api_keys.requests_today` counter. The counter is reset daily at 00:00 UTC. Requests exceeding the daily limit receive HTTP 429 (Too Many Requests) with a `Retry-After` header.
+Rate limits are enforced at the application level using the `api_keys.requests_today` counter. The `daily_limit` is read from the database per-key, allowing individual limits. The counter is reset daily at midnight PST. Requests exceeding the daily limit receive HTTP 429 (Too Many Requests) with a `Retry-After` header.
 
 ### CORS
 
@@ -1294,7 +1486,7 @@ Each user has a 30-day rolling billing cycle starting from their signup date. Th
 
 ### Current: 1km Grid (2,113,524 cells)
 
-At 1km resolution (Phase 3, complete), the system is deployed on a single Railway instance:
+At 1km resolution, the system is deployed on a single Railway instance:
 
 | Resource | Estimated Usage | Railway Limit |
 |----------|----------------|---------------|
@@ -1318,8 +1510,8 @@ If the single-instance architecture becomes insufficient:
 
 ### Cost Estimation (Railway)
 
-| Service | Phase 1-2 (5km) | Phase 3 (1km) |
-|---------|-----------------|---------------|
+| Service | 5km | 1km |
+|---------|-----|-----|
 | Web (FastAPI) | ~$5-10/month | ~$10-20/month |
 | PostgreSQL | ~$5-10/month | ~$15-30/month |
 | Redis | ~$5/month | ~$10-20/month |

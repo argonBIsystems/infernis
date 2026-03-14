@@ -111,6 +111,9 @@ def run_daily_pipeline(target_date: date | None = None):
                 run_time,
             )
 
+        # Fire webhook alerts for any thresholds exceeded
+        _check_alerts(predictions)
+
         # Clean up old data
         cleanup_old_data()
 
@@ -153,6 +156,17 @@ def _run_forecast_pipeline(
             forecast._observed_snow = satellite.get("snow", np.zeros(0)).astype(np.float64)
             forecast._observed_lai = satellite.get("lai")
             logger.info("Forecast: using today's observed NDVI/snow/LAI")
+
+        # Pass today's ERA5 soil moisture (Open-Meteo GEM returns None for soil moisture)
+        weather = getattr(daily_pipeline, "_last_weather", None)
+        if weather:
+            forecast._observed_soil_moisture = {
+                "soil_moisture_1": weather.get("soil_moisture_1"),
+                "soil_moisture_2": weather.get("soil_moisture_2"),
+                "soil_moisture_3": weather.get("soil_moisture_3"),
+                "soil_moisture_4": weather.get("soil_moisture_4"),
+            }
+            logger.info("Forecast: using today's ERA5 soil moisture")
 
         forecasts = forecast.run(
             grid_df=grid_df,
@@ -223,6 +237,91 @@ def _save_forecasts_to_db(forecasts: dict[str, list[dict]], base_date: date):
             db.close()
     except Exception as e:
         logger.error("Failed to save forecasts to DB: %s", e)
+
+
+def _check_alerts(predictions: dict):
+    """Check all active alerts and fire webhooks for threshold exceedances."""
+    try:
+        import httpx
+
+        from infernis.db.engine import SessionLocal
+        from infernis.db.tables import AlertDB
+        from infernis.models.enums import DangerLevel
+
+        db = SessionLocal()
+        try:
+            alerts = db.query(AlertDB).filter(AlertDB.is_active == True).all()  # noqa: E712
+            if not alerts:
+                return
+
+            triggered = 0
+            failed = 0
+
+            for alert in alerts:
+                pred = predictions.get(alert.cell_id)
+                if pred is None:
+                    continue
+
+                score = pred.get("score", 0.0)
+                if score < alert.threshold:
+                    continue
+
+                # Threshold exceeded — fire the webhook
+                level = DangerLevel.from_score(score)
+                payload = {
+                    "alert_id": alert.id,
+                    "cell_id": alert.cell_id,
+                    "latitude": alert.latitude,
+                    "longitude": alert.longitude,
+                    "threshold": alert.threshold,
+                    "risk": {
+                        "score": round(score, 4),
+                        "level": level.value,
+                        "color": level.color,
+                    },
+                    "fwi": pred.get("fwi", 0.0),
+                    "temperature_c": pred.get("temperature_c", 0.0),
+                    "triggered_at": datetime.now(timezone.utc).isoformat(),
+                }
+
+                try:
+                    resp = httpx.post(
+                        alert.webhook_url,
+                        json=payload,
+                        timeout=10.0,
+                        headers={
+                            "Content-Type": "application/json",
+                            "User-Agent": "INFERNIS-Alerts/1.0",
+                        },
+                    )
+                    logger.info(
+                        "Alert %d fired: cell=%s score=%.3f → %s (HTTP %d)",
+                        alert.id,
+                        alert.cell_id,
+                        score,
+                        alert.webhook_url[:50],
+                        resp.status_code,
+                    )
+                    alert.last_triggered = datetime.now(timezone.utc)
+                    triggered += 1
+                except Exception as e:
+                    logger.warning("Alert %d webhook failed: %s", alert.id, e)
+                    failed += 1
+
+            db.commit()
+
+            if triggered or failed:
+                logger.info(
+                    "Alerts: %d triggered, %d failed out of %d active",
+                    triggered,
+                    failed,
+                    len(alerts),
+                )
+
+        finally:
+            db.close()
+    except Exception as e:
+        logger.error("Alert check failed: %s", e)
 
 
 def _load_grid() -> pd.DataFrame | None:

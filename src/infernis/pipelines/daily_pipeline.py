@@ -142,6 +142,8 @@ class DailyPipeline:
 
         # Step 1: Fetch ERA5 weather
         weather = self._fetch_weather(target_date, grid_lats, grid_lons)
+        # Store soil moisture for forecast pipeline (Open-Meteo GEM doesn't provide it)
+        self._last_weather = weather
 
         # Step 2: Compute FWI for each cell
         fwi_results = self._compute_fwi(cell_ids, weather, target_date)

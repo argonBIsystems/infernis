@@ -87,9 +87,25 @@ def _validate_bc_coords(lat: float, lon: float):
         )
 
 
-@router.get("/risk/{lat}/{lon}")
+@router.get("/risk/{lat}/{lon}", tags=["risk"])
 async def get_risk(lat: float, lon: float):
-    """Point risk query. Returns fire risk for the nearest grid cell."""
+    """Point fire risk query for a BC location.
+
+    Returns the current fire risk score, danger level, FWI components,
+    weather conditions, and ecological context for the nearest grid cell.
+
+    **Use cases:**
+    - Mobile app showing risk for user's current location
+    - Property-level wildfire assessment for insurance underwriting
+    - Pre-trip safety check for hikers and campers
+    - Integration into weather apps and outdoor recreation tools
+
+    **Example:**
+    ```
+    GET /v1/risk/50.67/-120.33
+    ```
+    Returns risk score, 6 FWI components, weather conditions, BEC zone, and 24h change.
+    """
     _validate_bc_coords(lat, lon)
 
     cell_id = _find_nearest_cell(lat, lon)
@@ -103,6 +119,32 @@ async def get_risk(lat: float, lon: float):
 
     score = pred.get("score", 0.0)
     level = DangerLevel.from_score(score)
+
+    # Compute 24h change from DB
+    change_24h = None
+    try:
+        from datetime import date, timedelta
+
+        from infernis.db.engine import SessionLocal
+        from infernis.db.tables import PredictionDB
+
+        yesterday = date.today() - timedelta(days=1)
+        db = SessionLocal()
+        try:
+            prev = (
+                db.query(PredictionDB.score)
+                .filter(
+                    PredictionDB.cell_id == cell_id,
+                    PredictionDB.prediction_date == yesterday,
+                )
+                .first()
+            )
+            if prev:
+                change_24h = round(score - prev.score, 4)
+        finally:
+            db.close()
+    except Exception:
+        pass
 
     return RiskResponse(
         location={"lat": lat, "lon": lon},
@@ -132,16 +174,34 @@ async def get_risk(lat: float, lon: float):
             "elevation_m": cell.get("elevation_m", 0),
         },
         next_update=pred.get("next_update", ""),
+        change_24h=change_24h,
     )
 
 
-@router.get("/forecast/{lat}/{lon}")
+@router.get("/forecast/{lat}/{lon}", tags=["forecast"])
 async def get_forecast(
     lat: float,
     lon: float,
     days: int = Query(default=10, ge=1, le=10, description="Number of forecast days"),
 ):
-    """Multi-day fire risk forecast for a location (up to 10 days)."""
+    """Multi-day fire risk forecast for a location (up to 10 days).
+
+    Uses real NWP weather forecasts from ECCC's GEM model (HRDPS 2.5km for
+    days 1-2, GDPS for days 3-10) with FWI roll-forward and confidence decay.
+
+    **Use cases:**
+    - "Is Saturday safe for a campfire?" — check the 5-day outlook
+    - Fire crew pre-positioning based on predicted risk trajectory
+    - Utility transmission line de-energization planning
+    - Event planning and outdoor activity scheduling
+
+    **Example:**
+    ```
+    GET /v1/forecast/50.67/-120.33?days=7
+    ```
+    Returns daily risk scores with weather data (temp, RH, wind, precip),
+    FWI components, confidence level, and data source per day.
+    """
     _validate_bc_coords(lat, lon)
 
     if not _forecast_cache:
@@ -170,6 +230,10 @@ async def get_forecast(
                 confidence=d["confidence"],
                 fwi=FWIComponents(**d["fwi"]),
                 data_source=d.get("data_source", ""),
+                temperature_c=d.get("temperature_c"),
+                rh_pct=d.get("rh_pct"),
+                wind_kmh=d.get("wind_kmh"),
+                precip_24h_mm=d.get("precip_24h_mm"),
             )
             for d in forecast_days
         ],
@@ -177,9 +241,18 @@ async def get_forecast(
     )
 
 
-@router.get("/risk/zones")
+@router.get("/risk/zones", tags=["risk"])
 async def get_risk_zones():
-    """Returns aggregate risk levels for all BEC zones."""
+    """Risk summary aggregated by BEC zone across all of BC.
+
+    Returns average and maximum risk scores for each of BC's biogeoclimatic
+    zones, with cell counts and number of high-risk cells.
+
+    **Use cases:**
+    - Province-wide risk dashboard for government briefings
+    - News media fire risk summary
+    - Identifying which ecological zones are most at risk today
+    """
     if not _predictions_cache:
         raise HTTPException(status_code=503, detail="Predictions not yet available.")
 
@@ -214,7 +287,7 @@ async def get_risk_zones():
     return {"zones": result, "timestamp": _last_pipeline_run}
 
 
-@router.get("/fwi/{lat}/{lon}")
+@router.get("/fwi/{lat}/{lon}", tags=["risk"])
 async def get_fwi(lat: float, lon: float):
     """Raw FWI components for a location."""
     _validate_bc_coords(lat, lon)
@@ -239,7 +312,7 @@ async def get_fwi(lat: float, lon: float):
     }
 
 
-@router.get("/conditions/{lat}/{lon}")
+@router.get("/conditions/{lat}/{lon}", tags=["risk"])
 async def get_conditions(lat: float, lon: float):
     """Current weather and environmental conditions."""
     _validate_bc_coords(lat, lon)
@@ -265,9 +338,18 @@ async def get_conditions(lat: float, lon: float):
     }
 
 
-@router.get("/status")
+@router.get("/status", tags=["system"])
 async def get_status():
-    """Pipeline health and system status."""
+    """Pipeline health and system status.
+
+    Returns operational status, last pipeline run time, grid cell count,
+    and model version. Use this for monitoring and uptime checks.
+
+    **Use cases:**
+    - Monitoring dashboard health check
+    - Automated uptime monitoring (e.g., Uptime Robot, Pingdom)
+    - Verifying the pipeline ran today before using predictions
+    """
     return StatusResponse(
         status="operational" if _predictions_cache else "initializing",
         version=settings.app_version,
@@ -278,7 +360,7 @@ async def get_status():
     )
 
 
-@router.get("/coverage")
+@router.get("/coverage", tags=["system"])
 async def get_coverage():
     """BC coverage boundary and grid metadata."""
     return {
@@ -295,7 +377,7 @@ async def get_coverage():
     }
 
 
-@router.get("/risk/grid")
+@router.get("/risk/grid", tags=["risk"])
 async def get_risk_grid(
     bbox: str = Query(
         ...,
@@ -304,7 +386,24 @@ async def get_risk_grid(
     ),
     level: Optional[str] = Query(None, description="Filter by danger level"),
 ):
-    """Area risk query. Returns GeoJSON FeatureCollection for cells in bbox."""
+    """Area risk query returning GeoJSON FeatureCollection.
+
+    Returns risk data for all grid cells within a bounding box as GeoJSON,
+    ready for direct rendering on a map. Each feature includes score, level,
+    color, BEC zone, fuel type, FWI, and temperature.
+
+    **Use cases:**
+    - Colored risk overlay on a web map (Leaflet, Mapbox)
+    - Municipality-wide risk assessment
+    - Identifying the highest-risk cells in an area
+
+    **Bbox format:** `south,west,north,east` (e.g., `49.0,-120.5,50.5,-119.0`)
+
+    **Example:**
+    ```
+    GET /v1/risk/grid?bbox=49.0,-120.5,50.5,-119.0
+    ```
+    """
     if not _predictions_cache:
         raise HTTPException(status_code=503, detail="Predictions not yet available.")
 
@@ -358,6 +457,7 @@ async def get_risk_grid(
                     "fuel_type": cell.get("fuel_type", ""),
                     "fwi": pred.get("fwi", 0.0),
                     "temperature_c": pred.get("temperature_c", 0.0),
+                    "color": DangerLevel.from_score(pred.get("score", 0.0)).color,
                 },
             }
         )
@@ -373,7 +473,7 @@ async def get_risk_grid(
     }
 
 
-@router.get("/risk/heatmap")
+@router.get("/risk/heatmap", tags=["risk"])
 async def get_risk_heatmap(
     bbox: str = Query(
         ...,
@@ -610,7 +710,7 @@ def _demo_risk_response(sample: dict) -> dict:
     }
 
 
-@router.get("/demo/risk")
+@router.get("/demo/risk", tags=["demo"])
 async def get_demo_risk():
     """Sample risk responses at all six danger levels. No API key required.
 
@@ -643,7 +743,7 @@ async def get_demo_risk():
     }
 
 
-@router.get("/demo/risk/zones")
+@router.get("/demo/risk/zones", tags=["demo"])
 async def get_demo_risk_zones():
     """BEC zone risk summary using demo data. No API key required."""
     zones = {}
@@ -664,7 +764,7 @@ async def get_demo_risk_zones():
     }
 
 
-@router.get("/demo/risk/{level}")
+@router.get("/demo/risk/{level}", tags=["demo"])
 async def get_demo_risk_by_level(level: str):
     """Single sample risk response for a specific danger level. No API key required.
 
@@ -697,14 +797,14 @@ async def get_demo_risk_by_level(level: str):
     }
 
 
-@router.get("/demo/risk/{lat}/{lon}")
+@router.get("/demo/risk/{lat}/{lon}", tags=["demo"])
 async def get_demo_risk_by_coords(lat: float, lon: float):
     """Point risk query using demo data. Snaps to nearest test location. No API key required."""
     sample = _find_nearest_demo(lat, lon)
     return _demo_risk_response(sample)
 
 
-@router.get("/demo/forecast")
+@router.get("/demo/forecast", tags=["demo"])
 async def get_demo_forecast():
     """Sample 10-day forecast showing risk escalation. No API key required."""
     from datetime import date, timedelta
@@ -818,7 +918,7 @@ async def get_demo_forecast():
     }
 
 
-@router.get("/demo/forecast/{lat}/{lon}")
+@router.get("/demo/forecast/{lat}/{lon}", tags=["demo"])
 async def get_demo_forecast_by_coords(lat: float, lon: float):
     """Multi-day forecast using demo data. Snaps to nearest test location. No API key required."""
     import math
@@ -860,7 +960,7 @@ async def get_demo_forecast_by_coords(lat: float, lon: float):
     }
 
 
-@router.get("/demo/fwi/{lat}/{lon}")
+@router.get("/demo/fwi/{lat}/{lon}", tags=["demo"])
 async def get_demo_fwi_by_coords(lat: float, lon: float):
     """Raw FWI components using demo data. Snaps to nearest test location. No API key required."""
     sample = _find_nearest_demo(lat, lon)
@@ -874,7 +974,7 @@ async def get_demo_fwi_by_coords(lat: float, lon: float):
     }
 
 
-@router.get("/demo/conditions/{lat}/{lon}")
+@router.get("/demo/conditions/{lat}/{lon}", tags=["demo"])
 async def get_demo_conditions_by_coords(lat: float, lon: float):
     """Weather conditions using demo data. Snaps to nearest test location. No API key required."""
     sample = _find_nearest_demo(lat, lon)

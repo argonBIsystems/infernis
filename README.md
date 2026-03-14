@@ -113,17 +113,29 @@ curl -H "X-API-Key: YOUR_KEY" "https://api.infernis.ca/v1/risk/heatmap?bbox=49.0
 
 ### All Endpoints
 
-**Live (API Key required):**
+**Core (API Key required):**
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /v1/risk/{lat}/{lon}` | Point fire risk (score, FWI, weather, context) |
-| `GET /v1/forecast/{lat}/{lon}` | Multi-day forecast (up to 10 days) |
-| `GET /v1/risk/grid?bbox=s,w,n,e` | Area risk as GeoJSON FeatureCollection |
+| `GET /v1/risk/{lat}/{lon}` | Point fire risk with score, FWI, weather, context, and `change_24h` |
+| `GET /v1/forecast/{lat}/{lon}` | Multi-day forecast with weather data (up to 10 days) |
+| `POST /v1/risk/batch` | Batch risk query — up to 50 locations in one call |
+| `GET /v1/risk/history/{lat}/{lon}` | Historical risk data (up to 90 days) |
+| `GET /v1/risk/grid?bbox=s,w,n,e` | Area risk as GeoJSON with color hex in properties |
 | `GET /v1/risk/heatmap?bbox=s,w,n,e` | Fire risk as PNG image |
 | `GET /v1/risk/zones` | Risk summary per BEC zone |
 | `GET /v1/fwi/{lat}/{lon}` | Raw FWI components (FFMC, DMC, DC, ISI, BUI, FWI) |
 | `GET /v1/conditions/{lat}/{lon}` | Current weather and environment conditions |
+| `GET /v1/fires/near/{lat}/{lon}` | Active fires from BC Wildfire Service (sorted by distance) |
+| `POST /v1/alerts` | Register webhook for risk threshold alerts |
+| `GET /v1/alerts` | List your active alerts |
+| `DELETE /v1/alerts/{id}` | Deactivate an alert |
+
+**Map Tiles (no API key):**
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /v1/tiles/{z}/{x}/{y}.png` | 256x256 PNG risk overlay for Google Maps / Leaflet / Mapbox |
 
 **Demo (no API key — same response format, mock data):**
 
@@ -334,6 +346,7 @@ brand/              Logo, brand guidelines
 | [Technical Architecture](docs/TECHNICAL_ARCHITECTURE.md) | System design, database schema, pipeline flows |
 | [API Reference](docs/API_REFERENCE.md) | Endpoint docs with request/response examples |
 | [Brand Guidelines](brand/BRAND.md) | Logo, colors, typography |
+| [Roadmap](docs/ROADMAP.md) | Planned features, research, how to contribute |
 
 ## Tech Stack
 

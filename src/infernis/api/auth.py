@@ -31,7 +31,7 @@ PUBLIC_PATHS = {
 }
 
 # Path prefixes that don't require authentication
-PUBLIC_PREFIXES = (f"{settings.api_prefix}/demo",)
+PUBLIC_PREFIXES = (f"{settings.api_prefix}/demo", f"{settings.api_prefix}/tiles")
 
 # Tier rate limits (requests/day)
 TIER_LIMITS = {

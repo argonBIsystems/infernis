@@ -56,6 +56,7 @@ class RiskResponse(BaseModel):
     context: dict
     forecast_horizon: str = "24h"
     next_update: str
+    change_24h: Optional[float] = Field(None, description="Score change vs yesterday (-1 to +1)")
 
 
 class ZoneRiskSummary(BaseModel):
@@ -77,6 +78,10 @@ class ForecastDay(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     fwi: FWIComponents
     data_source: str = ""
+    temperature_c: Optional[float] = Field(None, description="Forecast temperature (°C)")
+    rh_pct: Optional[float] = Field(None, description="Forecast relative humidity (%)")
+    wind_kmh: Optional[float] = Field(None, description="Forecast wind speed (km/h)")
+    precip_24h_mm: Optional[float] = Field(None, description="Forecast precipitation (mm)")
 
 
 class ForecastResponse(BaseModel):
