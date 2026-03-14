@@ -154,6 +154,17 @@ def _run_forecast_pipeline(
             forecast._observed_lai = satellite.get("lai")
             logger.info("Forecast: using today's observed NDVI/snow/LAI")
 
+        # Pass today's ERA5 soil moisture (Open-Meteo GEM returns None for soil moisture)
+        weather = getattr(daily_pipeline, "_last_weather", None)
+        if weather:
+            forecast._observed_soil_moisture = {
+                "soil_moisture_1": weather.get("soil_moisture_1"),
+                "soil_moisture_2": weather.get("soil_moisture_2"),
+                "soil_moisture_3": weather.get("soil_moisture_3"),
+                "soil_moisture_4": weather.get("soil_moisture_4"),
+            }
+            logger.info("Forecast: using today's ERA5 soil moisture")
+
         forecasts = forecast.run(
             grid_df=grid_df,
             current_fwi_state=daily_pipeline._prev_fwi_state,

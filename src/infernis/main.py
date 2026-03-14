@@ -10,6 +10,8 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.requests import Request
 
+from starlette.middleware.base import BaseHTTPMiddleware
+
 from infernis.api.auth import APIKeyMiddleware
 from infernis.api.routes import router
 from infernis.config import settings
@@ -42,6 +44,20 @@ if settings.sentry_dsn:
         logger.info("Sentry error tracking initialized")
     except ImportError:
         logger.warning("sentry-sdk not installed, error tracking disabled")
+
+
+class DemoCORSMiddleware(BaseHTTPMiddleware):
+    """Add permissive CORS for demo and tile endpoints so browser JS apps work."""
+
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        path = request.url.path
+        if "/demo" in path or "/tiles/" in path:
+            response.headers["Access-Control-Allow-Origin"] = "*"
+            response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+            response.headers["Access-Control-Allow-Headers"] = "X-API-Key, Content-Type"
+        return response
+
 
 _scheduler = None
 
@@ -161,7 +177,43 @@ def _run_scheduled_pipeline():
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
-    description="Intelligence forged in fire. BC Forest Fire Prediction Engine.",
+    description="""**Wildfire risk prediction API for British Columbia.**
+
+INFERNIS processes weather data, satellite imagery, and 21 open data sources
+through an automated daily pipeline to produce fire risk scores for 84,535 grid
+cells across BC. Updated daily at 2 PM Pacific.
+
+**Getting started:**
+1. Hit any `/v1/demo/` endpoint — no API key needed, same response format as live API
+2. Sign up at [infernis.ca](https://infernis.ca) for a free API key (50 requests/day)
+3. Use the same URL structure as demo — just drop `/demo` and add your `X-API-Key` header
+
+**Base URL:** `https://api.infernis.ca/v1`
+
+**Authentication:** `X-API-Key` header on all non-demo endpoints.
+
+**Rate limits:** Free tier 50 req/day. Headers: `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`.
+""",
+    openapi_tags=[
+        {"name": "risk", "description": "Point and area fire risk queries — the core API"},
+        {
+            "name": "forecast",
+            "description": "Multi-day fire risk forecasts using ECCC GEM weather model",
+        },
+        {
+            "name": "tiles",
+            "description": "Map tile overlays for Google Maps, Leaflet, and Mapbox — no API key needed",
+        },
+        {"name": "batch", "description": "Query multiple locations in a single request"},
+        {"name": "history", "description": "Historical risk data from the last 90 days"},
+        {"name": "fires", "description": "Active wildfire data from BC Wildfire Service"},
+        {"name": "alerts", "description": "Webhook notifications when risk exceeds a threshold"},
+        {
+            "name": "demo",
+            "description": "Mock data endpoints for testing — no API key required, same response format as live API",
+        },
+        {"name": "system", "description": "Health checks, pipeline status, and grid metadata"},
+    ],
     docs_url=f"{settings.api_prefix}/docs",
     redoc_url=f"{settings.api_prefix}/redoc",
     openapi_url=f"{settings.api_prefix}/openapi.json",
@@ -177,10 +229,30 @@ app.add_middleware(
 
 # API key auth (skipped in debug mode)
 app.add_middleware(APIKeyMiddleware)
+app.add_middleware(DemoCORSMiddleware)
 
 app.include_router(router)
+from infernis.api.tiles_routes import tiles_router
+
+app.include_router(tiles_router)
 if dashboard_router is not None:
     app.include_router(dashboard_router)
+
+from infernis.api.batch_routes import batch_router
+
+app.include_router(batch_router)
+
+from infernis.api.history_routes import history_router
+
+app.include_router(history_router)
+
+from infernis.api.fires_routes import fires_router
+
+app.include_router(fires_router)
+
+from infernis.api.alerts_routes import alerts_router
+
+app.include_router(alerts_router)
 
 # Static file directories and domain routing (only when frontend is present)
 # In Docker (pip-installed), __file__ points to site-packages; fall back to CWD

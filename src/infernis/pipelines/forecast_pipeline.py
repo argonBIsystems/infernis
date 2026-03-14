@@ -27,10 +27,11 @@ class ForecastPipeline:
         self._model = None
         self.confidence_decay = settings.forecast_confidence_decay
         self.max_days = settings.forecast_max_days
-        # Observed vegetation state from today's daily pipeline (carried forward)
+        # Observed state from today's daily pipeline (carried forward)
         self._observed_ndvi: np.ndarray | None = None
         self._observed_snow: np.ndarray | None = None
         self._observed_lai: np.ndarray | None = None
+        self._observed_soil_moisture: dict[str, np.ndarray] | None = None
 
     def load_model(self, model_path: str | None = None):
         """Load XGBoost model for forecast inference."""
@@ -129,6 +130,14 @@ class ForecastPipeline:
                             "bui": round(fwi_results["bui"][i], 1),
                             "fwi": round(fwi_results["fwi"][i], 2),
                         },
+                        "temperature_c": round(
+                            float(weather.get("temperature_c", np.zeros(n_cells))[i]), 1
+                        ),
+                        "rh_pct": round(float(weather.get("rh_pct", np.zeros(n_cells))[i]), 1),
+                        "wind_kmh": round(float(weather.get("wind_kmh", np.zeros(n_cells))[i]), 0),
+                        "precip_24h_mm": round(
+                            float(weather.get("precip_24h_mm", np.zeros(n_cells))[i]), 1
+                        ),
                     }
                 )
 
@@ -315,10 +324,10 @@ class ForecastPipeline:
                 weather.get("wind_kmh", np.full(n_cells, 10.0)),
                 weather.get("wind_dir_deg", np.full(n_cells, 225.0)),
                 weather.get("precip_24h_mm", np.zeros(n_cells)),
-                weather.get("soil_moisture_1", np.full(n_cells, 0.3)),
-                weather.get("soil_moisture_2", np.full(n_cells, 0.3)),
-                weather.get("soil_moisture_3", np.full(n_cells, 0.3)),
-                weather.get("soil_moisture_4", np.full(n_cells, 0.3)),
+                self._get_soil_moisture(weather, "soil_moisture_1", n_cells),
+                self._get_soil_moisture(weather, "soil_moisture_2", n_cells),
+                self._get_soil_moisture(weather, "soil_moisture_3", n_cells),
+                self._get_soil_moisture(weather, "soil_moisture_4", n_cells),
                 weather.get("evapotrans_mm", np.full(n_cells, 2.0)),
                 # Vegetation — use today's observed values if available (3)
                 self._observed_ndvi if self._observed_ndvi is not None else np.full(n_cells, 0.5),
@@ -340,6 +349,32 @@ class ForecastPipeline:
         )
 
         return feature_matrix
+
+    def _get_soil_moisture(
+        self, weather: dict[str, np.ndarray], key: str, n_cells: int
+    ) -> np.ndarray:
+        """Get soil moisture: prefer forecast weather, fall back to daily ERA5 observed."""
+        defaults = {
+            "soil_moisture_1": 0.25,
+            "soil_moisture_2": 0.28,
+            "soil_moisture_3": 0.30,
+            "soil_moisture_4": 0.32,
+        }
+        # Check if forecast weather has real values (not NaN-filled defaults)
+        forecast_val = weather.get(key)
+        if forecast_val is not None:
+            # Check if it's the NaN-fill default (meaning Open-Meteo returned None)
+            default = defaults.get(key, 0.3)
+            if not np.allclose(forecast_val, default, atol=0.001):
+                return forecast_val
+
+        # Fall back to today's ERA5 observed values
+        if self._observed_soil_moisture and key in self._observed_soil_moisture:
+            val = self._observed_soil_moisture[key]
+            if val is not None:
+                return val
+
+        return np.full(n_cells, defaults.get(key, 0.3))
 
     def _predict(self, features: np.ndarray) -> np.ndarray:
         """Run XGBoost inference."""
