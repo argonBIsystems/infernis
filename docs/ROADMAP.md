@@ -130,6 +130,18 @@ Risk aggregated at configurable spatial scales: province, fire centre (6), BEC z
 
 Boundary data from BC Data Catalogue (fire centres, regional districts) and BC Freshwater Atlas (watersheds) — same open data pipeline as BEC zones.
 
+### Post-Fire Recovery Monitoring
+**Status:** Planned
+**Data source:** [ORNL DAAC](https://daac.ornl.gov/) burn severity datasets + Sentinel-2 NDVI
+
+```
+GET /v1/recovery/{lat}/{lon}
+```
+
+Track vegetation recovery after wildfires using satellite-derived burn severity (dNBR) and ongoing NDVI time series. The ORNL DAAC provides Landsat-derived burn scar data covering Alaska and Canada (1985–2015, 4.5 GB) and circumpolar fire polygons with NBR/dNBR/RdNBR metrics (1986–2020, 1.6 GB).
+
+Returns: burn severity classification at the location, months since fire, vegetation recovery trajectory (NDVI time series post-burn), estimated recovery percentage, and reburn risk assessment (recently burned areas with regrowing fuel). Serves insurance (claim validation, recovery monitoring) and forestry (reforestation tracking) verticals directly.
+
 ### SSE Streaming for Live Alerts
 **Status:** Planned
 
@@ -213,9 +225,20 @@ Forward-project fire risk under CMIP6 SSP scenarios using BCCAQv2 downscaled cli
 
 Note: projections reflect how future climate conditions would score under the model trained on 2015–2024 data. They do not account for ecosystem adaptation, land use changes, or fire management evolution.
 
-### Fire Spread Simulation API
+### Fire Behavior Prediction (FBP) & Spread Simulation
 **Status:** Research
 **Impact:** Unprecedented as a public API
+**Foundation:** [cffdrs_py](https://github.com/cffdrs/cffdrs_py) — official Python CFFDRS module (FWI + FBP)
+
+INFERNIS currently implements only the FWI (Fire Weather Index) system. The Canadian CFFDRS also includes FBP (Fire Behavior Prediction) — which calculates rate of spread, head fire intensity, crown fraction burned, and fire type (surface/intermittent crown/active crown). An official Python module (`cffdrs_py`) now implements both FWI and FBP with 25+ parameters per cell.
+
+**Phase 1 — FBP integration:**
+- Integrate `cffdrs_py` FBP calculations into the daily pipeline
+- Add fire behavior fields to risk responses: `rate_of_spread_mpm`, `head_fire_intensity_kwm`, `fire_type`, `crown_fraction_burned`
+- Validate INFERNIS's custom FWI implementation against `cffdrs_py` canonical output
+- Cross-reference with BC Gov's open-source [Wildfire Predictive Services](https://github.com/bcgov/wps) (FastAPI + PostGIS, 64 stars, 2,147 commits) for architectural patterns
+
+**Phase 2 — Spread simulation API:**
 
 ```
 POST /v1/simulate/spread
@@ -227,7 +250,7 @@ POST /v1/simulate/spread
 }
 ```
 
-Given an ignition point and current conditions (FWI, wind speed/direction, fuel type, slope), simulate fire spread using simplified Huygens wavelet propagation and return GeoJSON polygons for each time step. Uses data INFERNIS already computes daily.
+Given an ignition point, use FBP rate-of-spread + wind direction + slope + fuel type to simulate fire perimeter growth. Return GeoJSON polygons for each time step. Uses FWI, FBP, and spatial data INFERNIS already computes daily.
 
 No public API offers this. Technosylva does it internally for fire agencies. NASA has a prototype digital twin. This would make INFERNIS the most technically ambitious wildfire API in existence.
 
@@ -241,14 +264,21 @@ Uber's H3 indexing as an alternative to the current square grid. Equal-area hexa
 
 Serve daily risk surfaces as COG files so GIS professionals can load them directly into QGIS or ArcGIS via HTTP range requests — no full download needed. Standard raster format for the geospatial industry.
 
-### Air Quality Integration
-**Status:** Research
+### Air Quality & Smoke Forecasts
+**Status:** Planned
+**Data source:** [FireSmoke Canada](https://firesmoke.ca/) (UBC / NRCan / ECCC)
 
 ```
-GET /v1/air-quality/{lat}/{lon}
+GET /v1/smoke/{lat}/{lon}
 ```
 
-Wildfire smoke is the #1 public health impact. Correlate smoke data (PurpleAir, IQAir, Copernicus CAMS) with active fires and risk levels. Show AQI, PM2.5, and smoke forecast alongside fire risk. No wildfire API does this.
+Wildfire smoke is the #1 public health impact. FireSmoke Canada provides free, government-backed PM2.5 smoke concentration forecasts at 12km resolution, updated multiple times daily (08:00, 14:00, 20:00, 02:00 UTC) in NetCDF format covering all of Canada. No commercial API needed.
+
+Returns current and forecast PM2.5 concentrations, AQI classification, smoke plume direction, and correlation with nearby active fires and INFERNIS risk levels. Endpoints:
+- `GET /v1/smoke/{lat}/{lon}` — Current PM2.5 + 48h smoke forecast
+- `GET /v1/smoke/forecast?hours=48` — Province-wide smoke surface as GeoJSON
+
+No wildfire API combines fire risk prediction with smoke forecasts. This gives INFERNIS a unique "fire + air quality" story for public health, municipal, and tourism use cases.
 
 ### Interactive API Playground
 **Status:** Planned
@@ -287,10 +317,30 @@ Interested in working on any of these? Here's how:
 
 We especially welcome contributions in:
 - Explainability and SHAP integration
-- Fire spread modeling algorithms
+- FBP (Fire Behavior Prediction) integration via `cffdrs_py`
+- Fire spread simulation algorithms
+- Smoke forecast integration (FireSmoke Canada NetCDF pipeline)
+- Post-fire recovery monitoring (ORNL DAAC dNBR + Sentinel-2)
 - H3 grid integration
 - SDK generation and testing
-- Climate projection data pipelines
+- Climate projection data pipelines (BCCAQv2 / ClimateData.ca)
 - IoT sensor protocol integration
-- Air quality data source integration
 - Multi-province data pipeline configuration
+
+---
+
+## Open Data & Research Sources
+
+Key external data sources and tools referenced in this roadmap:
+
+| Resource | Provider | Use in INFERNIS |
+|----------|----------|-----------------|
+| [FireSmoke Canada](https://firesmoke.ca/) | UBC / NRCan / ECCC | PM2.5 smoke forecasts (12km, NetCDF, multi-daily) |
+| [cffdrs_py](https://github.com/cffdrs/cffdrs_py) | NRCan (official) | FWI validation + FBP fire behavior prediction |
+| [ORNL DAAC Fire Products](https://daac.ornl.gov/) | NASA / ORNL | Burn severity (dNBR), post-fire recovery, carbon emissions |
+| [BC Wildfire Predictive Services](https://github.com/bcgov/wps) | BC Government | Reference architecture (FastAPI + PostGIS, open source) |
+| [ClimateData.ca](https://climatedata.ca/) | ECCC / PCIC | BCCAQv2 downscaled CMIP6 projections for climate scenarios |
+| [CNFDB](https://cwfis.cfs.nrcan.gc.ca/ha/nfdb) | NRCan | Historical fire perimeters (1950–present) |
+| [NASA FIRMS](https://firms.modaps.eosdis.nasa.gov/) | NASA | Near-real-time active fire detection (MODIS/VIIRS) |
+| [NIFC Open Data](https://data-nifc.opendata.arcgis.com/) | US NIFC | US fire data for cross-border expansion |
+| [awesome-wildfire](https://github.com/ubc-lib-geo/awesome-wildfire) | UBC Library | Curated list of wildfire data, tools, and research |
