@@ -128,11 +128,33 @@ GET /v1/risk/summary?scale=fire_centre
 
 Risk aggregated at configurable spatial scales: province, fire centre (6), BEC zone (14), regional district (27), or watershed. Each region includes cell count, mean/max risk, cells above HIGH, dominant SHAP driver, and escalation velocity. Enterprise dashboards need rolled-up views, not 84K individual cells.
 
-Boundary data from BC Data Catalogue (fire centres, regional districts) and BC Freshwater Atlas (watersheds) — same open data pipeline as BEC zones.
+Boundary data from BC Data Catalogue via [`bcdata_py`](https://github.com/bcgov/bcdata_py) — BC Gov's official Python WFS client for all provincial geodata layers (fire centres, regional districts, watersheds, terrain, admin boundaries). Pip-installable, geopandas-compatible, supports direct PostGIS loading.
+
+### C-Haines Index & Atmospheric Instability
+**Status:** Planned
+**Reference:** [bcgov/wps C-Haines implementation](https://github.com/bcgov/wps)
+
+```
+GET /v1/conditions/{lat}/{lon}  — add c_haines field
+GET /v1/risk/zones              — add c_haines_max per zone
+```
+
+The Continuous Haines Index measures atmospheric instability and dryness — a leading indicator for extreme fire behavior (plume-driven fires, pyroconvection). BC Gov's WPS already computes C-Haines from weather model data (GDPS/HRDPS) and serves it as KML/GeoJSON polygons with 48-72h forecasts.
+
+INFERNIS can compute C-Haines from the same weather model data it already ingests (temperature and dewpoint at 850/700/500 hPa levels) and add it to risk and conditions responses. Low implementation effort, high value — C-Haines > 10 is the strongest atmospheric signal for blow-up fire potential.
+
+### Diurnal FFMC (Sub-Daily Fire Weather)
+**Status:** Planned
+**Reference:** [bcgov/wps](https://github.com/bcgov/wps) + [bcgov/fbp-go](https://github.com/bcgov/fbp-go) diurnal FFMC lookup tables
+
+INFERNIS currently computes daily FFMC. WPS and fbp-go both implement hourly/diurnal FFMC adjustments using Red Book (3rd edition, 2018) lookup tables — correcting for time-of-day temperature and humidity cycles. Afternoon FFMC can be 15-20 points higher than morning, significantly affecting risk accuracy.
+
+Add diurnal FFMC adjustment to the daily pipeline so risk scores reflect afternoon peak conditions rather than daily averages. The lookup tables are published in the CFFDRS Red Book and already implemented in both `bcgov/wps` and `bcgov/fbp-go`.
 
 ### Post-Fire Recovery Monitoring
 **Status:** Planned
-**Data source:** [ORNL DAAC](https://daac.ornl.gov/) burn severity datasets + Sentinel-2 NDVI
+**Data sources:** [ORNL DAAC](https://daac.ornl.gov/) burn severity datasets + Sentinel-2 NDVI
+**Reference:** [bcgov/burn-severity](https://github.com/bcgov/burn-severity) dNBR methodology, [bcgov/wps-fire-perimeter](https://github.com/bcgov/wps-fire-perimeter) GEE-based detection
 
 ```
 GET /v1/recovery/{lat}/{lon}
@@ -216,12 +238,15 @@ Harvest risk endpoint accepts cutblock geometries, returns per-unit risk with 7-
 ### Climate Scenario Projections
 **Status:** Research
 **Impact:** 10–30 year risk outlooks for insurance and government planning
+**Data sources:** [bcgov/climr](https://github.com/bcgov/climr) (CMIP6 downscaled to 2.5km), [ClimateData.ca](https://climatedata.ca/) (BCCAQv2)
 
 ```
 GET /v1/climate/{lat}/{lon}?scenario=ssp245&horizon=2050
 ```
 
-Forward-project fire risk under CMIP6 SSP scenarios using BCCAQv2 downscaled climate data from ClimateData.ca. Returns baseline vs. projected annual risk, fire season length projections, and return period estimates. Supports SSP1-2.6, SSP2-4.5, SSP5-8.5 at horizons 2030–2080.
+Forward-project fire risk under CMIP6 SSP scenarios. `climr` (BC Gov's climate downscaling R package, 18 stars) provides 13-model CMIP6 ensemble data downscaled to 2.5km resolution across all of North America — 1901-2023 historical + 2015-2100 projections. Uses change-factor downscaling with elevation adjustment, remote PostGIS backend with local caching to minimize storage. BCCAQv2 from ClimateData.ca is the alternative data path.
+
+Returns baseline vs. projected annual risk, fire season length projections, and return period estimates. Supports SSP1-2.6, SSP2-4.5, SSP5-8.5 at horizons 2030–2080.
 
 Note: projections reflect how future climate conditions would score under the model trained on 2015–2024 data. They do not account for ecosystem adaptation, land use changes, or fire management evolution.
 
@@ -236,7 +261,7 @@ INFERNIS currently implements only the FWI (Fire Weather Index) system. The Cana
 - Integrate `cffdrs_py` FBP calculations into the daily pipeline
 - Add fire behavior fields to risk responses: `rate_of_spread_mpm`, `head_fire_intensity_kwm`, `fire_type`, `crown_fraction_burned`
 - Validate INFERNIS's custom FWI implementation against `cffdrs_py` canonical output
-- Cross-reference with BC Gov's open-source [Wildfire Predictive Services](https://github.com/bcgov/wps) (FastAPI + PostGIS, 64 stars, 2,147 commits) for architectural patterns
+- Cross-reference with BC Gov's open-source [Wildfire Predictive Services](https://github.com/bcgov/wps) (FastAPI + PostGIS, 64 stars, 2,147 commits) for HFI calculator architecture and [fbp-go](https://github.com/bcgov/fbp-go) (9 stars) for FBP field calculation patterns — fire shape ellipse modeling, slope-corrected wind speed, diurnal FFMC lookup tables
 
 **Phase 2 — Spread simulation API:**
 
@@ -253,6 +278,22 @@ POST /v1/simulate/spread
 Given an ignition point, use FBP rate-of-spread + wind direction + slope + fuel type to simulate fire perimeter growth. Return GeoJSON polygons for each time step. Uses FWI, FBP, and spatial data INFERNIS already computes daily.
 
 No public API offers this. Technosylva does it internally for fire agencies. NASA has a prototype digital twin. This would make INFERNIS the most technically ambitious wildfire API in existence.
+
+### Forest Drought Index Integration
+**Status:** Research
+**Reference:** [bcgov/forestDroughtTool](https://github.com/bcgov/forestDroughtTool) (12 stars), [bcgov/forDRAT](https://github.com/bcgov/forDRAT)
+
+BC Gov's forestDroughtTool computes stand-level drought hazard using ASMR (Actual-to-Potential Evapotranspiration Ratio) water-balance modeling across BEC zones and soil moisture regimes. Outputs drought risk codes (L/M/H/VH) by species and biogeoclimatic unit with climate projection overlays (RCP 4.5, 2020/2050/2080).
+
+ASMR serves as an antecedent fuel moisture proxy — drier conditions = higher fire risk — complementing the FWI's moisture codes (FFMC/DMC/DC) with a physically-based soil water balance. Could add a `drought_index` field to risk responses and improve forestry vertical accuracy.
+
+### Automated Fire Perimeter Detection
+**Status:** Research
+**Reference:** [bcgov/wps-fire-perimeter](https://github.com/bcgov/wps-fire-perimeter) — GEE + Sentinel-2 NBR classification
+
+Automated fire perimeter generation from Sentinel-2 satellite imagery (10m resolution) via Google Earth Engine. Uses Normalized Burn Ratio classification `(B12-B8)/(B12+B8)` with cloud masking. BC Gov's implementation targets fires >90ha with daily scheduled processing → PostGIS storage → WFS serving.
+
+Could improve INFERNIS's active fire tracking beyond point-based BCWS ArcGIS data — generating actual fire perimeter polygons for the `/v1/fires/near` endpoint and feeding into the fire spread simulation as ground-truth validation.
 
 ### H3 Hexagonal Grid
 **Status:** Research
@@ -338,7 +379,14 @@ Key external data sources and tools referenced in this roadmap:
 | [FireSmoke Canada](https://firesmoke.ca/) | UBC / NRCan / ECCC | PM2.5 smoke forecasts (12km, NetCDF, multi-daily) |
 | [cffdrs_py](https://github.com/cffdrs/cffdrs_py) | NRCan (official) | FWI validation + FBP fire behavior prediction |
 | [ORNL DAAC Fire Products](https://daac.ornl.gov/) | NASA / ORNL | Burn severity (dNBR), post-fire recovery, carbon emissions |
-| [BC Wildfire Predictive Services](https://github.com/bcgov/wps) | BC Government | Reference architecture (FastAPI + PostGIS, open source) |
+| [bcgov/wps](https://github.com/bcgov/wps) | BC Government | Reference architecture, C-Haines, HFI, diurnal FFMC (64 stars) |
+| [bcgov/fbp-go](https://github.com/bcgov/fbp-go) | BC Government | FBP field calculations, fire shape ellipse, slope-corrected wind (9 stars) |
+| [bcgov/wps-fire-perimeter](https://github.com/bcgov/wps-fire-perimeter) | BC Government | Automated fire perimeter generation from Sentinel-2 via GEE |
+| [bcgov/burn-severity](https://github.com/bcgov/burn-severity) | BC Government | dNBR burn severity classification methodology |
+| [bcgov/climr](https://github.com/bcgov/climr) | BC Government | CMIP6 downscaled to 2.5km for North America (18 stars) |
+| [bcgov/forestDroughtTool](https://github.com/bcgov/forestDroughtTool) | BC Government | ASMR water-balance drought hazard by BEC zone (12 stars) |
+| [bcgov/bcdata_py](https://github.com/bcgov/bcdata_py) | BC Government | Python WFS client for all BC open geodata layers (33 stars) |
+| [bcgov/castor](https://github.com/bcgov/castor) | BC Government | Forest harvest simulation model at 1ha resolution (20 stars) |
 | [ClimateData.ca](https://climatedata.ca/) | ECCC / PCIC | BCCAQv2 downscaled CMIP6 projections for climate scenarios |
 | [CNFDB](https://cwfis.cfs.nrcan.gc.ca/ha/nfdb) | NRCan | Historical fire perimeters (1950–present) |
 | [NASA FIRMS](https://firms.modaps.eosdis.nasa.gov/) | NASA | Near-real-time active fire detection (MODIS/VIIRS) |
