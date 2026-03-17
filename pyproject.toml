@@ -35,7 +35,7 @@ dependencies = [
     "torch>=2.0",
     "sentry-sdk[fastapi]>=2.0",
     "cfgrib>=0.9.10",
-    "cffdrs>=0.2",
+    "cffdrs @ git+https://github.com/nrcan-cfs-fire/cffdrs_py.git",
     "shap>=0.44",
 ]
 
