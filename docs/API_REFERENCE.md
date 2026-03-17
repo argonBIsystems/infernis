@@ -68,6 +68,11 @@ Returns the complete risk assessment for the nearest grid cell.
     "level": "VERY_HIGH",
     "color": "#EF4444"
   },
+  "confidence_interval": {
+    "lower": 0.61,
+    "upper": 0.83,
+    "level": 0.90
+  },
   "fwi": {
     "ffmc": 91.2,
     "dmc": 68.4,
@@ -83,7 +88,15 @@ Returns the complete risk assessment for the nearest grid cell.
     "precip_24h_mm": 0.0,
     "soil_moisture": 0.12,
     "ndvi": 0.45,
-    "snow_cover": false
+    "snow_cover": false,
+    "c_haines": 10.2
+  },
+  "fire_behaviour": {
+    "rate_of_spread_mpm": 5.2,
+    "head_fire_intensity_kwm": 3200.0,
+    "fire_type": "surface",
+    "crown_fraction_burned": 0.0,
+    "flame_length_m": 2.1
   },
   "context": {
     "bec_zone": "IDF",
@@ -444,7 +457,7 @@ None.
 ```json
 {
   "status": "operational",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "last_pipeline_run": "2026-07-15T21:00:00+00:00",
   "model_version": "fire_core_v1",
   "grid_cells": 84535,
@@ -481,6 +494,109 @@ None.
 
 ---
 
+### GET /v1/explain/{lat}/{lon}
+
+**Point risk explanation.** Returns SHAP-based feature contributions explaining why risk is at its current level for the nearest grid cell to the specified coordinates. The response includes the top drivers ranked by absolute contribution, with human-readable descriptions, direction of influence (increasing or decreasing risk), raw feature values, and a composed natural-language summary.
+
+#### Path Parameters
+
+| Parameter | Type  | Required | Description                                      |
+|-----------|-------|----------|--------------------------------------------------|
+| `lat`     | float | Yes      | Latitude in decimal degrees. Must be within BC.  |
+| `lon`     | float | Yes      | Longitude in decimal degrees. Must be within BC. |
+
+#### Query Parameters
+
+| Parameter | Type | Required | Default | Description                                                           |
+|-----------|------|----------|---------|-----------------------------------------------------------------------|
+| `top_n`   | int  | No       | 5       | Number of top drivers to return, ranked by absolute SHAP contribution. Range: 1 to 28. |
+
+#### Response 200 -- Success
+
+```json
+{
+  "cell_id": "BC-1K-0093841",
+  "score": 0.42,
+  "level": "HIGH",
+  "drivers": [
+    {
+      "feature": "dmc",
+      "contribution": 0.135,
+      "direction": "increasing",
+      "value": 87.3,
+      "description": "Duff Moisture Code increasing — deep organic fuel drying"
+    },
+    {
+      "feature": "ndvi",
+      "contribution": 0.098,
+      "direction": "decreasing",
+      "value": 0.31,
+      "description": "Vegetation greenness decreasing (NDVI 0.31)"
+    }
+  ],
+  "summary": "Risk is HIGH primarily due to Duff Moisture Code increasing — deep organic fuel drying combined with Vegetation greenness decreasing (NDVI 0.31)."
+}
+```
+
+#### Error Responses
+
+| Status | Description                                                                 |
+|--------|-----------------------------------------------------------------------------|
+| 400    | Malformed request. Latitude or longitude is not a valid number.             |
+| 404    | The specified coordinates do not fall within the BC coverage area.          |
+| 422    | Coordinates are valid numbers but outside the acceptable range for BC.      |
+| 429    | Rate limit exceeded.                                                        |
+| 503    | Service temporarily unavailable.                                            |
+
+---
+
+### GET /v1/explain/zones
+
+**Zone-level risk explanation.** Returns per-BEC-zone aggregated risk drivers. For each zone, the response lists features ranked by mean absolute SHAP value across all cells in that zone, showing which factors are driving risk at the regional level.
+
+#### Query Parameters
+
+| Parameter | Type | Required | Default | Description                                                           |
+|-----------|------|----------|---------|-----------------------------------------------------------------------|
+| `top_n`   | int  | No       | 5       | Number of top drivers to return per zone. Range: 1 to 28.            |
+
+#### Response 200 -- Success
+
+```json
+{
+  "zones": [
+    {
+      "bec_zone": "IDF",
+      "cell_count": 487,
+      "drivers": [
+        {
+          "feature": "dmc",
+          "mean_abs_shap": 0.112,
+          "direction": "increasing",
+          "description": "Duff Moisture Code — deep organic fuel drying"
+        },
+        {
+          "feature": "temperature_c",
+          "mean_abs_shap": 0.089,
+          "direction": "increasing",
+          "description": "Air temperature driving fuel desiccation"
+        }
+      ]
+    }
+  ],
+  "timestamp": "2026-07-15T21:00:00+00:00"
+}
+```
+
+#### Error Responses
+
+| Status | Description                                                                 |
+|--------|-----------------------------------------------------------------------------|
+| 429    | Rate limit exceeded.                                                        |
+| 503    | Service temporarily unavailable.                                            |
+
+---
+
 ## Field Descriptions
 
 ### Risk Response Fields
@@ -494,6 +610,9 @@ None.
 | `risk.score`         | float   | Composite fire risk score from 0.0 (no risk) to 1.0 (maximum risk). This is the weighted output of both ML models.                                           |
 | `risk.level`         | string  | Danger level derived from the risk score. One of: `VERY_LOW`, `LOW`, `MODERATE`, `HIGH`, `VERY_HIGH`, `EXTREME`.                                              |
 | `risk.color`         | string  | Hex color code associated with the danger level, suitable for map rendering.                                                                                  |
+| `confidence_interval.lower` | float | Lower bound of the prediction interval.                                                                                                                  |
+| `confidence_interval.upper` | float | Upper bound of the prediction interval.                                                                                                                  |
+| `confidence_interval.level` | float | Confidence level of the interval (e.g., 0.90 for 90%). Present when quantile regression models are trained.                                              |
 | `fwi.ffmc`           | float   | Fine Fuel Moisture Code. See [FWI Components](#fwi-components).                                                                                               |
 | `fwi.dmc`            | float   | Duff Moisture Code. See [FWI Components](#fwi-components).                                                                                                    |
 | `fwi.dc`             | float   | Drought Code. See [FWI Components](#fwi-components).                                                                                                          |
@@ -507,6 +626,12 @@ None.
 | `conditions.soil_moisture` | float | Volumetric soil moisture content (0.0--1.0). Derived from remote sensing and station interpolation.                                                      |
 | `conditions.ndvi`    | float   | Normalized Difference Vegetation Index (-1.0 to 1.0). Indicates vegetation greenness and fuel moisture. Values below 0.3 in forested areas suggest dry, fire-prone vegetation. |
 | `conditions.snow_cover` | boolean | Whether snow cover is present at the location. When `true`, fire risk is typically negligible.                                                             |
+| `conditions.c_haines` | float   | Continuous Haines Index (0--13). Measures lower-atmospheric stability and dryness; higher values indicate greater potential for large, erratic fire growth. Values above 10 are considered critical. |
+| `fire_behaviour.rate_of_spread_mpm` | float | Predicted head fire rate of spread in meters per minute, computed from the FBP System using current weather and fuel type.                        |
+| `fire_behaviour.head_fire_intensity_kwm` | float | Byram's head fire intensity in kilowatts per meter of fire front. Values above 4000 kW/m are generally beyond suppression capability.          |
+| `fire_behaviour.fire_type` | string | Predicted fire type: `surface`, `intermittent_crown`, or `active_crown`.                                                                               |
+| `fire_behaviour.crown_fraction_burned` | float | Fraction of the canopy consumed (0.0--1.0). Non-zero values indicate crown fire activity.                                                          |
+| `fire_behaviour.flame_length_m` | float | Estimated flame length in meters, derived from fire intensity.                                                                                          |
 | `context.bec_zone`   | string  | Biogeoclimatic Ecosystem Classification zone code. See [BEC Zone Codes](#bec-zone-codes).                                                                     |
 | `context.fuel_type`  | string  | Canadian Forest Fire Behaviour Prediction System fuel type code. See [Fuel Type Codes](#fuel-type-codes).                                                     |
 | `context.elevation_m` | int    | Elevation above sea level in meters.                                                                                                                          |

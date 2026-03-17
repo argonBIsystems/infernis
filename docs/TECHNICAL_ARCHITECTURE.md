@@ -2,7 +2,7 @@
 
 > How the system works under the hood.
 
-**Date**: 2026-03-14
+**Date**: 2026-03-16
 **Status**: Living Document
 
 ---
@@ -16,6 +16,7 @@
    - [FIRE CORE (XGBoost Classifier)](#fire-core-xgboost-classifier)
    - [HEATMAP ENGINE (U-Net CNN)](#heatmap-engine-u-net-cnn)
    - [RISK FUSER](#risk-fuser)
+   - [Services Layer](#services-layer)
 4. [BC Grid System](#bc-grid-system)
 5. [Database Schema](#database-schema)
 6. [Caching Strategy](#caching-strategy)
@@ -374,6 +375,10 @@ Non-BC cells (ocean, out-of-province) are masked with zeros. The mask is also ap
 
 The CNN is trained on historical daily rasters (2015-2024) where the label is a binary fire/no-fire mask derived from CNFDB and BC Fire Perimeters. Training uses binary cross-entropy loss with the spatial mask applied to prevent the model from learning on non-land areas. The 1km model early-stopped at epoch 24 (patience=10) on Apple MPS, achieving AUC-ROC of 0.815.
 
+#### Quantile Regression (`training/quantile_trainer.py`)
+
+In addition to the primary binary classifier, `quantile_trainer.py` trains a pair of XGBoost **quantile regression** models (using the `reg:quantileerror` objective) at the 10th and 90th percentiles. These models produce lower and upper confidence bounds around the point prediction, giving consumers a calibrated uncertainty interval (e.g., "the fire probability for this cell is 0.42, 80% CI [0.28, 0.61]"). Quantile models are trained on the same feature matrix and training set as FIRE CORE. At inference time, if quantile model files are present, the pipeline runs them alongside the primary model and attaches `confidence_lower` and `confidence_upper` fields to the prediction output.
+
 #### Inference
 
 At 1km resolution with `base_filters=64`, the FireUNet CNN has approximately **31 million parameters**. At 5km with `base_filters=32`, it has approximately **7.8 million parameters**. Inference processes a single forward pass in under 1 second on CPU. No GPU is required for inference.
@@ -445,6 +450,28 @@ The fused and regionally calibrated score maps to a six-level danger classificat
 | EXTREME | 0.80 -- 1.00 | #1A0000 | Critical risk. Explosive fire growth potential. |
 
 Threshold boundaries are the defaults. Per-BEC-zone calibration may shift these boundaries so that, for example, the EXTREME threshold in the CWH (wet coastal) zone triggers at a lower raw score than in the BG (dry grassland) zone, reflecting the relative rarity and severity of fire in each ecosystem.
+
+---
+
+### Services Layer
+
+Beyond the core FWI engine (`services/fwi_service.py`), INFERNIS includes several specialized service modules that augment the pipeline with domain-specific computations.
+
+#### Explainability (`services/explainability.py`)
+
+`ExplainabilityService` wraps `shap.TreeExplainer` to compute per-cell SHAP (SHapley Additive exPlanations) values for the FIRE CORE XGBoost model. After inference, the service takes the feature matrix and the trained booster and returns a SHAP value vector for each grid cell, indicating how much each of the 28 features contributed to (or detracted from) that cell's fire probability. SHAP values are stored in the `predictions.shap_values` JSONB column and exposed via the `/v1/explain` API endpoints.
+
+#### Continuous Haines Index (`services/c_haines.py`)
+
+Computes the **Continuous Haines Index (C-HAINES)** from 850 hPa and 500 hPa pressure-level data. C-HAINES measures lower-atmospheric instability and dryness -- conditions that promote erratic, plume-dominated fire behavior. The index is computed when pressure-level data is available from ERA5 and added to the feature matrix as an additional predictor. When pressure-level data is unavailable, the feature is gracefully omitted.
+
+#### Diurnal FFMC Adjustment (`services/diurnal_ffmc.py`)
+
+Applies sub-daily Fine Fuel Moisture Code corrections using the **Red Book diurnal curves** (Van Wagner 1977). Standard FWI computes FFMC once per day at the noon observation, but fine fuel moisture fluctuates significantly throughout the day. This service adjusts the noon FFMC value based on hour-of-day, producing a more accurate instantaneous moisture estimate for afternoon peak fire hours. The adjustment runs after FWI computation and before feature assembly.
+
+#### Fire Behavior Prediction (`services/fbp_service.py`)
+
+Wraps the `cffdrs_py` package to compute **Fire Behavior Prediction (FBP) System** outputs for each grid cell after the primary risk prediction. FBP uses the cell's fuel type, slope, aspect, FWI components, and weather to estimate fire behavior metrics including rate of spread (ROS), head fire intensity (HFI), and crown fraction burned (CFB). These outputs provide actionable suppression intelligence beyond the binary fire/no-fire prediction.
 
 ---
 
@@ -576,6 +603,9 @@ CREATE TABLE predictions (
 
     -- Extensible feature storage
     features        JSONB,                        -- overflow for additional features
+
+    -- Explainability (migration 006)
+    shap_values     JSONB,                        -- per-feature SHAP contributions
 
     -- Model metadata
     model_version   VARCHAR(20),
@@ -977,6 +1007,30 @@ Deactivate a webhook alert.
 
 ---
 
+#### `GET /v1/explain/{lat}/{lon}`
+
+Returns SHAP feature attributions for the nearest grid cell, showing which features drove the risk prediction up or down. The response includes a ranked list of feature names and their SHAP values (positive = increased fire probability, negative = decreased it).
+
+**Path Parameters:**
+- `lat` (float): Latitude in decimal degrees (WGS84)
+- `lon` (float): Longitude in decimal degrees (WGS84)
+
+**Response:** JSON object with `cell_id`, `prediction_date`, `score`, and `shap_values` (ordered dict of feature name to SHAP contribution).
+
+**Auth:** API key required
+
+---
+
+#### `GET /v1/explain/zones`
+
+Returns zone-level aggregation of SHAP feature drivers. For each BEC zone, identifies the top features contributing to elevated risk by averaging SHAP values across all cells in the zone.
+
+**Response:** JSON array of zone objects, each containing `zone_code`, `zone_name`, and `top_drivers` (ranked list of feature names and mean SHAP values).
+
+**Auth:** API key required
+
+---
+
 #### `GET /v1/tiles/{z}/{x}/{y}.png`
 
 Slippy map tiles for rendering risk data on web maps. Returns pre-rendered PNG tiles.
@@ -1047,6 +1101,12 @@ Step  Description                                          Duration (est.)
  2    Compute FWI components (FFMC, DMC, DC, ISI, BUI,     <30 sec
       FWI) using previous day's codes via fwi_service
 
+ 2a   Apply diurnal FFMC adjustment                         <5 sec
+      (Red Book curves via diurnal_ffmc service)
+
+ 2b   Compute C-HAINES index                                <5 sec
+      (if 850/500 hPa pressure-level data available)
+
  3    Fetch latest NDVI composite from GEE                  1-2 min
       (only if new 16-day composite is available)
 
@@ -1062,14 +1122,25 @@ Step  Description                                          Duration (est.)
  7    Run XGBoost inference -> per-cell probabilities        ~2-3 min
       (batch predict on full feature matrix)
 
+ 7a   Run quantile model inference                           ~1-2 min
+      (confidence interval bounds, if quantile models loaded)
+
  8    Run CNN inference -> spatial heatmap                   <30 sec
       (single forward pass through U-Net on CPU)
 
  9    Fuse model outputs with regional calibration           <5 sec
       per BEC zone (14 zones)
 
+ 9a   Compute SHAP values                                    ~1-2 min
+      (per-cell feature attributions via TreeExplainer)
+
+ 9b   Run FBP fire behavior prediction                       <30 sec
+      (rate of spread, head fire intensity per cell
+       via cffdrs_py FBP wrapper)
+
 10    Write results to PostgreSQL                            30-60 sec
-      (batch INSERT INTO predictions)
+      (batch INSERT INTO predictions, including
+       shap_values JSONB)
 
 11    Batch-cache results to Redis                           <5 sec
       (Redis pipeline with ~84,500 SETEX commands)
@@ -1085,7 +1156,7 @@ Step  Description                                          Duration (est.)
 14    Update pipeline_runs table with status                 <1 sec
       (record timing, cell count, model version, errors)
 
-Total estimated pipeline duration: 7-15 minutes
+Total estimated pipeline duration: 10-20 minutes
 ```
 
 ### Error Handling
@@ -1157,6 +1228,8 @@ After the daily pipeline completes (predictions + forecast), `_check_alerts()` r
 | Forecast Weather | Open-Meteo API (GEM seamless) | -- | Primary forecast weather source (ECCC GEM/HRDPS/GDPS blend) |
 | HTTP Client | httpx | >=0.27 | Async HTTP client for Open-Meteo, BCWS fires, MSC Datamart, and external API calls |
 | Serialization | joblib | >=1.3 | Efficient serialization for large NumPy arrays (pipeline intermediates) |
+| Explainability | shap | >=0.44 | TreeSHAP for per-cell feature attributions on XGBoost |
+| CFFDRS | cffdrs | >=0.2 | Canonical CFFDRS implementation (FWI validation + FBP fire behavior prediction) |
 | Calibration | scikit-learn | >=1.4 | Platt scaling (CalibratedClassifierCV), evaluation metrics |
 | Spatial Index | scipy | >=1.12 | KDTree for nearest-cell lookups |
 | ASGI Server | uvicorn | >=0.30 | High-performance ASGI server for FastAPI |
@@ -1176,6 +1249,7 @@ API routes are split across multiple files in `src/infernis/api/`:
 | `api/history_routes.py` | Historical risk from DB (`/v1/risk/history/`) |
 | `api/fires_routes.py` | Nearby fires from BCWS (`/v1/fires/near/`) |
 | `api/alerts_routes.py` | Webhook alert CRUD (`/v1/alerts`) |
+| `api/explain_routes.py` | SHAP explainability (`/v1/explain/`) |
 | `api/dashboard_routes.py` | Firebase dashboard (private repo only) |
 
 ### System-Level Dependencies (Dockerfile)
