@@ -163,6 +163,70 @@ def cmd_train(args):
         json.dump(all_metrics, f, indent=2)
     logger.info("Metrics saved to %s", metrics_path)
 
+    # Train quantile models if requested
+    if getattr(args, "quantile", False):
+        _cmd_train_quantile(X_train, y_train, output_path)
+
+
+def _cmd_train_quantile(X_train, y_train, main_model_path: Path):
+    """Train lower/upper quantile models alongside the main model.
+
+    Quantile models are saved adjacent to the main model using the stem
+    ``fire_core_q05.json`` and ``fire_core_q95.json`` (or the equivalent
+    derived from ``main_model_path``).
+
+    The quantile targets are the calibrated probability outputs of the
+    training labels (continuous float32 arrays in [0, 1]) suitable for
+    ``reg:quantileerror`` regression.
+
+    Parameters
+    ----------
+    X_train:
+        Feature matrix used to train the main model.
+    y_train:
+        Integer label array (0/1) from the main training split.  Converted
+        to float32 for quantile regression (0.0 / 1.0 targets).
+    main_model_path:
+        Path to the saved main model; used to derive quantile output paths.
+    """
+    from infernis.training.quantile_trainer import (
+        save_quantile_models,
+        train_quantile_models,
+    )
+
+    logger.info("=== Training quantile models (5th / 95th percentile) ===")
+
+    # Use float y targets (0.0 / 1.0) — quantile regression is defined for
+    # continuous targets, and binary labels are a valid special case.
+    y_float = y_train.astype("float32")
+
+    lower_model, upper_model = train_quantile_models(
+        X_train, y_float, lower_q=0.05, upper_q=0.95
+    )
+
+    model_dir = main_model_path.parent
+    stem = main_model_path.stem  # e.g. "fire_core_v1"
+
+    # Derive quantile paths from the main model stem
+    # e.g. fire_core_v1 → fire_core_q05.json / fire_core_q95.json
+    base = stem.rsplit("_v", 1)[0] if "_v" in stem else stem
+    lower_path = model_dir / f"{base}_q05.json"
+    upper_path = model_dir / f"{base}_q95.json"
+
+    save_quantile_models(lower_model, upper_model, lower_path, upper_path)
+    logger.info(
+        "Quantile models saved: %s  %s",
+        lower_path,
+        upper_path,
+    )
+    logger.info(
+        "To enable confidence intervals in the API, set:\n"
+        "  INFERNIS_QUANTILE_LOWER_PATH=%s\n"
+        "  INFERNIS_QUANTILE_UPPER_PATH=%s",
+        lower_path,
+        upper_path,
+    )
+
 
 def cmd_evaluate(args):
     """Evaluate an existing model on the test set."""
@@ -235,6 +299,14 @@ def main():
     p_train.add_argument("--rounds", type=int, default=1000, help="Max boosting rounds")
     p_train.add_argument("--output", type=str, default=None, help="Model output path")
     p_train.add_argument("--no-shap", action="store_true", help="Skip SHAP analysis")
+    p_train.add_argument(
+        "--quantile",
+        action="store_true",
+        help=(
+            "Also train 5th/95th percentile quantile models for confidence intervals. "
+            "Saved as fire_core_q05.json / fire_core_q95.json alongside the main model."
+        ),
+    )
     p_train.set_defaults(func=cmd_train)
 
     # Evaluate
@@ -251,6 +323,11 @@ def main():
     p_all.add_argument("--full-year", action="store_true")
     p_all.add_argument("--grid-path", type=str, default=None, help="Path to grid parquet")
     p_all.add_argument("--chunk-days", type=int, default=0, help="Split output into chunks of N days")
+    p_all.add_argument(
+        "--quantile",
+        action="store_true",
+        help="Also train 5th/95th percentile quantile models for confidence intervals.",
+    )
     p_all.set_defaults(func=cmd_all)
 
     args = parser.parse_args()

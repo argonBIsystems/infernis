@@ -432,6 +432,8 @@ def _load_grid() -> pd.DataFrame | None:
 def _save_predictions_to_db(predictions: dict, target_date: date):
     """Batch insert predictions into the database using raw SQL for speed."""
     try:
+        import json
+
         from infernis.db.engine import SessionLocal
         from infernis.db.tables import PredictionDB
 
@@ -453,6 +455,10 @@ def _save_predictions_to_db(predictions: dict, target_date: date):
             total = 0
 
             for cell_id, pred in predictions.items():
+                # Serialize shap_values dict as JSON string for JSONB column
+                shap_raw = pred.get("shap_values")
+                shap_serialized = json.dumps(shap_raw) if shap_raw is not None else None
+
                 batch.append(
                     {
                         "cell_id": cell_id,
@@ -472,6 +478,7 @@ def _save_predictions_to_db(predictions: dict, target_date: date):
                         "soil_moisture": _py(pred.get("soil_moisture")),
                         "ndvi": _py(pred.get("ndvi")),
                         "snow_cover": _py(pred.get("snow_cover")),
+                        "shap_values": shap_serialized,
                     }
                 )
                 if len(batch) >= BATCH_SIZE:

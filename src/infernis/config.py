@@ -61,6 +61,12 @@ class Settings(BaseSettings):
     heatmap_model_path: str = Field(
         default="models/heatmap_v1.pt", alias="INFERNIS_HEATMAP_MODEL_PATH"
     )
+    quantile_lower_path: str = Field(
+        default="models/fire_core_q05.json", alias="INFERNIS_QUANTILE_LOWER_PATH"
+    )
+    quantile_upper_path: str = Field(
+        default="models/fire_core_q95.json", alias="INFERNIS_QUANTILE_UPPER_PATH"
+    )
 
     # Scheduler
     pipeline_enabled: bool = Field(default=True, alias="INFERNIS_PIPELINE_ENABLED")

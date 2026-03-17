@@ -81,7 +81,7 @@ async def batch_risk(req: BatchRequest):
 
         pred = _routes._predictions_cache[cell_id]
         cell = _routes._grid_cells.get(cell_id, {})
-        score = pred.get("score", 0.0)
+        score = _routes._safe_float(pred.get("score"), 0.0)
         level = DangerLevel.from_score(score)
 
         results.append(
@@ -90,8 +90,8 @@ async def batch_risk(req: BatchRequest):
                 "lon": loc.lon,
                 "grid_cell_id": cell_id,
                 "risk": {"score": score, "level": level.value, "color": level.color},
-                "fwi": pred.get("fwi", 0.0),
-                "temperature_c": pred.get("temperature_c", 0.0),
+                "fwi": _routes._safe_float(pred.get("fwi")),
+                "temperature_c": _routes._safe_float(pred.get("temperature_c")),
                 "bec_zone": cell.get("bec_zone", ""),
             }
         )

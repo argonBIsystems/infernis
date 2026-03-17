@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import logging
+import math
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -13,6 +14,8 @@ from fastapi.responses import Response
 from infernis.config import settings
 from infernis.models.enums import DangerLevel
 from infernis.models.schemas import (
+    ConfidenceInterval,
+    FireBehaviour,
     ForecastDay,
     ForecastResponse,
     FWIComponents,
@@ -25,6 +28,19 @@ from infernis.models.schemas import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix=settings.api_prefix)
+
+
+def _safe_float(val, default=0.0):
+    """Sanitize a float value for JSON serialization — replace NaN/Inf with default."""
+    if val is None:
+        return default
+    try:
+        f = float(val)
+        if math.isnan(f) or math.isinf(f):
+            return default
+        return f
+    except (TypeError, ValueError):
+        return default
 
 # In-memory store for the latest predictions (populated by pipeline)
 # In production this reads from Redis/PostGIS
@@ -117,7 +133,7 @@ async def get_risk(lat: float, lon: float):
     pred = _predictions_cache[cell_id]
     cell = _grid_cells.get(cell_id, {})
 
-    score = pred.get("score", 0.0)
+    score = _safe_float(pred.get("score"), 0.0)
     level = DangerLevel.from_score(score)
 
     # Compute 24h change from DB
@@ -146,27 +162,50 @@ async def get_risk(lat: float, lon: float):
     except Exception:
         pass
 
+    # Build confidence interval if available in prediction cache
+    ci_raw = pred.get("confidence_interval")
+    confidence_interval = None
+    if ci_raw is not None:
+        try:
+            confidence_interval = ConfidenceInterval(
+                lower=ci_raw["lower"],
+                upper=ci_raw["upper"],
+                level=ci_raw.get("level", 0.90),
+            )
+        except Exception:
+            confidence_interval = None
+
+    # Build FireBehaviour from prediction cache if available
+    fb_raw = pred.get("fire_behaviour")
+    fire_behaviour = None
+    if fb_raw is not None:
+        try:
+            fire_behaviour = FireBehaviour(**fb_raw)
+        except Exception:
+            fire_behaviour = None
+
     return RiskResponse(
         location={"lat": lat, "lon": lon},
         grid_cell_id=cell_id,
         timestamp=pred.get("timestamp", datetime.now(timezone.utc).isoformat()),
         risk=RiskScore(score=score, level=level),
         fwi=FWIComponents(
-            ffmc=pred.get("ffmc", 0.0),
-            dmc=pred.get("dmc", 0.0),
-            dc=pred.get("dc", 0.0),
-            isi=pred.get("isi", 0.0),
-            bui=pred.get("bui", 0.0),
-            fwi=pred.get("fwi", 0.0),
+            ffmc=_safe_float(pred.get("ffmc")),
+            dmc=_safe_float(pred.get("dmc")),
+            dc=_safe_float(pred.get("dc")),
+            isi=_safe_float(pred.get("isi")),
+            bui=_safe_float(pred.get("bui")),
+            fwi=_safe_float(pred.get("fwi")),
         ),
         conditions=WeatherConditions(
-            temperature_c=pred.get("temperature_c", 0.0),
-            rh_pct=pred.get("rh_pct", 0.0),
-            wind_kmh=pred.get("wind_kmh", 0.0),
-            precip_24h_mm=pred.get("precip_24h_mm", 0.0),
-            soil_moisture=pred.get("soil_moisture", 0.0),
-            ndvi=pred.get("ndvi", 0.0),
+            temperature_c=_safe_float(pred.get("temperature_c")),
+            rh_pct=_safe_float(pred.get("rh_pct")),
+            wind_kmh=_safe_float(pred.get("wind_kmh")),
+            precip_24h_mm=_safe_float(pred.get("precip_24h_mm")),
+            soil_moisture=_safe_float(pred.get("soil_moisture")),
+            ndvi=_safe_float(pred.get("ndvi")),
             snow_cover=pred.get("snow_cover", False),
+            c_haines=_safe_float(pred.get("c_haines"), default=None),
         ),
         context={
             "bec_zone": cell.get("bec_zone", ""),
@@ -175,6 +214,8 @@ async def get_risk(lat: float, lon: float):
         },
         next_update=pred.get("next_update", ""),
         change_24h=change_24h,
+        confidence_interval=confidence_interval,
+        fire_behaviour=fire_behaviour,
     )
 
 
@@ -262,7 +303,7 @@ async def get_risk_zones():
         zone = cell.get("bec_zone", "UNKNOWN")
         if zone not in zones:
             zones[zone] = {"scores": [], "cells": 0, "high_risk": 0}
-        score = pred.get("score", 0.0)
+        score = _safe_float(pred.get("score"), 0.0)
         zones[zone]["scores"].append(score)
         zones[zone]["cells"] += 1
         if score >= 0.60:
@@ -302,12 +343,12 @@ async def get_fwi(lat: float, lon: float):
         "grid_cell_id": cell_id,
         "timestamp": pred.get("timestamp", ""),
         "fwi": {
-            "ffmc": pred.get("ffmc", 0.0),
-            "dmc": pred.get("dmc", 0.0),
-            "dc": pred.get("dc", 0.0),
-            "isi": pred.get("isi", 0.0),
-            "bui": pred.get("bui", 0.0),
-            "fwi": pred.get("fwi", 0.0),
+            "ffmc": _safe_float(pred.get("ffmc")),
+            "dmc": _safe_float(pred.get("dmc")),
+            "dc": _safe_float(pred.get("dc")),
+            "isi": _safe_float(pred.get("isi")),
+            "bui": _safe_float(pred.get("bui")),
+            "fwi": _safe_float(pred.get("fwi")),
         },
     }
 
@@ -327,13 +368,14 @@ async def get_conditions(lat: float, lon: float):
         "grid_cell_id": cell_id,
         "timestamp": pred.get("timestamp", ""),
         "conditions": {
-            "temperature_c": pred.get("temperature_c", 0.0),
-            "rh_pct": pred.get("rh_pct", 0.0),
-            "wind_kmh": pred.get("wind_kmh", 0.0),
-            "precip_24h_mm": pred.get("precip_24h_mm", 0.0),
-            "soil_moisture": pred.get("soil_moisture", 0.0),
-            "ndvi": pred.get("ndvi", 0.0),
+            "temperature_c": _safe_float(pred.get("temperature_c")),
+            "rh_pct": _safe_float(pred.get("rh_pct")),
+            "wind_kmh": _safe_float(pred.get("wind_kmh")),
+            "precip_24h_mm": _safe_float(pred.get("precip_24h_mm")),
+            "soil_moisture": _safe_float(pred.get("soil_moisture")),
+            "ndvi": _safe_float(pred.get("ndvi")),
             "snow_cover": pred.get("snow_cover", False),
+            "c_haines": _safe_float(pred.get("c_haines"), default=None),
         },
     }
 
@@ -451,13 +493,13 @@ async def get_risk_grid(
                 },
                 "properties": {
                     "cell_id": cell_id,
-                    "score": pred.get("score", 0.0),
+                    "score": _safe_float(pred.get("score")),
                     "level": cell_level,
                     "bec_zone": cell.get("bec_zone", ""),
                     "fuel_type": cell.get("fuel_type", ""),
-                    "fwi": pred.get("fwi", 0.0),
-                    "temperature_c": pred.get("temperature_c", 0.0),
-                    "color": DangerLevel.from_score(pred.get("score", 0.0)).color,
+                    "fwi": _safe_float(pred.get("fwi")),
+                    "temperature_c": _safe_float(pred.get("temperature_c")),
+                    "color": DangerLevel.from_score(_safe_float(pred.get("score"))).color,
                 },
             }
         )
@@ -516,7 +558,7 @@ async def get_risk_heatmap(
 
         row = min(int((north - lat) / lat_step), height - 1)
         col = min(int((lon - west) / lon_step), width - 1)
-        raster[row, col] = pred.get("score", 0.0)
+        raster[row, col] = _safe_float(pred.get("score"))
 
     # Interpolate sparse grid to fill pixels
     from scipy.ndimage import uniform_filter

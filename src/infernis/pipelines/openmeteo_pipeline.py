@@ -23,6 +23,13 @@ logger = logging.getLogger(__name__)
 # Open-Meteo forecast endpoint
 BASE_URL = "https://api.open-meteo.com/v1/forecast"
 
+# Pressure-level variables for C-Haines computation
+PRESSURE_LEVEL_VARIABLES = [
+    "temperature_850hPa",
+    "temperature_500hPa",
+    "dewpoint_850hPa",
+]
+
 # Daily variables needed for FWI computation + feature matrix
 DAILY_VARIABLES = [
     "temperature_2m_max",
@@ -296,3 +303,167 @@ class OpenMeteoPipeline:
                 for sm_arr, sm_key in zip(sm_arrays, sm_keys):
                     if idx < len(sm_arr) and sm_arr[idx] is not None:
                         result[day][sm_key][cell_idx] = sm_arr[idx]
+
+    def fetch_pressure_levels(
+        self,
+        grid_lats: np.ndarray,
+        grid_lons: np.ndarray,
+    ) -> dict[str, np.ndarray]:
+        """Fetch pressure-level temperatures for C-Haines computation.
+
+        Fetches hourly T850, T500, and Td850 for today and returns the
+        afternoon representative value (mean of 12–18 UTC hours) per cell.
+
+        Args:
+            grid_lats: Array of latitudes for each grid cell.
+            grid_lons: Array of longitudes for each grid cell.
+
+        Returns:
+            dict with keys 't850', 't500', 'td850' — arrays of shape (n_cells,).
+            Values are NaN where data is unavailable.
+        """
+        import httpx
+
+        n_cells = len(grid_lats)
+        t850 = np.full(n_cells, np.nan)
+        t500 = np.full(n_cells, np.nan)
+        td850 = np.full(n_cells, np.nan)
+
+        n_batches = (n_cells + BATCH_SIZE - 1) // BATCH_SIZE
+        cells_fetched = 0
+        cells_failed = 0
+
+        logger.info(
+            "Open-Meteo: fetching pressure levels for C-Haines (%d cells, %d batches)",
+            n_cells,
+            n_batches,
+        )
+
+        with httpx.Client(timeout=60.0) as client:
+            for batch_idx in range(n_batches):
+                start = batch_idx * BATCH_SIZE
+                end = min(start + BATCH_SIZE, n_cells)
+                batch_lats = grid_lats[start:end]
+                batch_lons = grid_lons[start:end]
+
+                success = False
+                for attempt in range(MAX_RETRIES + 1):
+                    try:
+                        batch_data = self._fetch_pressure_level_batch(
+                            client, batch_lats, batch_lons
+                        )
+                        self._fill_pressure_levels(batch_data, t850, t500, td850, start, end)
+                        cells_fetched += end - start
+                        success = True
+                        break
+                    except Exception as e:
+                        is_rate_limit = "429" in str(e)
+                        if is_rate_limit and attempt < MAX_RETRIES:
+                            delay = RETRY_BASE_DELAY_S * (2**attempt)
+                            logger.warning(
+                                "Open-Meteo pressure-level batch %d/%d rate-limited "
+                                "(attempt %d/%d), retrying in %.0fs",
+                                batch_idx + 1,
+                                n_batches,
+                                attempt + 1,
+                                MAX_RETRIES + 1,
+                                delay,
+                            )
+                            time.sleep(delay)
+                        else:
+                            logger.warning(
+                                "Open-Meteo pressure-level batch %d/%d failed: %s",
+                                batch_idx + 1,
+                                n_batches,
+                                e,
+                            )
+                            cells_failed += end - start
+                            break
+
+                if batch_idx < n_batches - 1 and success:
+                    time.sleep(BATCH_DELAY_S)
+
+        logger.info(
+            "Open-Meteo pressure levels: %d/%d cells fetched, %d failed",
+            cells_fetched,
+            n_cells,
+            cells_failed,
+        )
+
+        return {"t850": t850, "t500": t500, "td850": td850}
+
+    def _fetch_pressure_level_batch(
+        self,
+        client,
+        lats: np.ndarray,
+        lons: np.ndarray,
+    ) -> list[dict]:
+        """Fetch hourly pressure-level data for a batch of coordinates.
+
+        Fetches today only (forecast_days=1) to minimise response size.
+        """
+        params = {
+            "latitude": ",".join(f"{lat:.4f}" for lat in lats),
+            "longitude": ",".join(f"{lon:.4f}" for lon in lons),
+            "hourly": ",".join(PRESSURE_LEVEL_VARIABLES),
+            "forecast_days": 1,
+            "models": "gem_seamless",
+            "timezone": "UTC",
+        }
+
+        resp = client.get(BASE_URL, params=params)
+        resp.raise_for_status()
+        data = resp.json()
+
+        if isinstance(data, dict):
+            if "error" in data and data["error"]:
+                raise RuntimeError(f"Open-Meteo pressure-level error: {data.get('reason', 'unknown')}")
+            return [data]
+        return data
+
+    def _fill_pressure_levels(
+        self,
+        batch_data: list[dict],
+        t850: np.ndarray,
+        t500: np.ndarray,
+        td850: np.ndarray,
+        start: int,
+        end: int,
+    ):
+        """Fill pressure-level arrays using the afternoon mean (12–18 UTC)."""
+        for i, location_data in enumerate(batch_data):
+            cell_idx = start + i
+            if cell_idx >= end:
+                break
+
+            hourly = location_data.get("hourly")
+            if not hourly:
+                continue
+
+            times = hourly.get("time", [])
+            t850_h = hourly.get("temperature_850hPa", [])
+            t500_h = hourly.get("temperature_500hPa", [])
+            td850_h = hourly.get("dewpoint_850hPa", [])
+
+            # Select afternoon hours (12–18 UTC) for representative instability
+            t850_vals, t500_vals, td850_vals = [], [], []
+            for j, ts in enumerate(times):
+                # ts format: "2026-03-15T12:00"
+                try:
+                    hour = int(ts[11:13])
+                except (IndexError, ValueError):
+                    continue
+                if 12 <= hour <= 18:
+                    if j < len(t850_h) and t850_h[j] is not None:
+                        t850_vals.append(t850_h[j])
+                    if j < len(t500_h) and t500_h[j] is not None:
+                        t500_vals.append(t500_h[j])
+                    if j < len(td850_h) and td850_h[j] is not None:
+                        td850_vals.append(td850_h[j])
+
+            if t850_vals:
+                t850[cell_idx] = np.mean(t850_vals)
+            if t500_vals:
+                t500[cell_idx] = np.mean(t500_vals)
+            if td850_vals:
+                td850[cell_idx] = np.mean(td850_vals)

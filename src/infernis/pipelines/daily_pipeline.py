@@ -22,6 +22,8 @@ import numpy as np
 import pandas as pd
 
 from infernis.config import settings
+from infernis.services.c_haines import compute_c_haines
+from infernis.services.diurnal_ffmc import adjust_ffmc_diurnal
 from infernis.services.fwi_service import FWIService
 
 logger = logging.getLogger(__name__)
@@ -43,6 +45,8 @@ class DailyPipeline:
         self._cnn_trainer = None  # HeatmapTrainer (holds CNN model)
         self._cnn_stats = None  # channel normalisation stats
         self._risk_fuser = None
+        self._quantile_lower = None  # XGBRegressor for 5th percentile
+        self._quantile_upper = None  # XGBRegressor for 95th percentile
         self._prev_fwi_state: dict[str, dict] = {}  # cell_id -> {ffmc, dmc, dc}
         self._pipeline_status = "success"  # tracks partial failures
         self._static_features: dict[str, np.ndarray] | None = None  # cached per-run
@@ -124,6 +128,25 @@ class DailyPipeline:
             logger.warning("Risk Fuser init failed: %s. Using raw scores.", e)
             self._risk_fuser = None
 
+        # --- Quantile models (optional — CI unavailable when files absent) ---
+        try:
+            from infernis.training.quantile_trainer import load_quantile_models
+
+            self._quantile_lower, self._quantile_upper = load_quantile_models(
+                settings.quantile_lower_path,
+                settings.quantile_upper_path,
+            )
+            if self._quantile_lower is not None:
+                logger.info(
+                    "Loaded quantile models from %s / %s",
+                    settings.quantile_lower_path,
+                    settings.quantile_upper_path,
+                )
+        except Exception as e:
+            logger.warning("Quantile model load failed: %s — CI will be None", e)
+            self._quantile_lower = None
+            self._quantile_upper = None
+
     def run(self, target_date: date | None = None, grid_df=None) -> dict:
         """Execute the full daily pipeline. Returns predictions dict keyed by cell_id."""
         target_date = target_date or date.today()
@@ -147,8 +170,18 @@ class DailyPipeline:
         # Store soil moisture for forecast pipeline (Open-Meteo GEM doesn't provide it)
         self._last_weather = weather
 
+        # Step 1b: Fetch pressure-level data for C-Haines (best-effort, non-blocking)
+        c_haines_arr = self._fetch_c_haines(grid_lats, grid_lons)
+
         # Step 2: Compute FWI for each cell
         fwi_results = self._compute_fwi(cell_ids, weather, target_date)
+
+        # Step 2b: Apply diurnal FFMC adjustment for 14:00 PT pipeline run time.
+        # _prev_fwi_state already holds the unadjusted daily FFMC (set inside
+        # _compute_fwi before this call), so carry-forward state is unaffected.
+        # We adjust FFMC → recompute ISI → recompute FWI for today's prediction.
+        # DMC, DC, and BUI are daily-scale indices and are NOT recomputed.
+        fwi_results = self._apply_diurnal_adjustment(fwi_results, weather, pipeline_hour=14)
 
         # Step 3: Fetch satellite data (NDVI, snow, LAI)
         satellite = self._fetch_satellite(target_date, grid_lats, grid_lons)
@@ -170,6 +203,12 @@ class DailyPipeline:
 
         # Step 5: Run XGBoost inference
         xgb_scores = self._predict(features)
+
+        # Step 5b: Compute SHAP values for all cells (optional — graceful on failure)
+        shap_matrix = self._compute_shap(features)
+
+        # Step 5c: Run quantile inference for confidence intervals (optional)
+        ci_lower, ci_upper = self._predict_quantiles(features)
 
         # Step 6: Run CNN heatmap inference (if available)
         cnn_scores = self._predict_cnn(
@@ -212,8 +251,36 @@ class DailyPipeline:
         bui_r = np.round(fwi_results["bui"], 1)
         fwi_r = np.round(fwi_results["fwi"], 1)
 
+        # C-Haines: round to 2 dp if available, else None per cell
+        c_haines_r = None
+        if c_haines_arr is not None:
+            c_haines_r = np.round(c_haines_arr, 2)
+
+        # Pre-build SHAP feature-name list (same order as feature matrix columns)
+        from infernis.pipelines.data_processor import FEATURE_NAMES as _FEATURE_NAMES
+
         predictions = {}
         for i in range(n_cells):
+            # Confidence interval (None when quantile models not loaded)
+            if ci_lower is not None and ci_upper is not None:
+                confidence_interval = {
+                    "lower": round(float(ci_lower[i]), 4),
+                    "upper": round(float(ci_upper[i]), 4),
+                    "level": 0.90,
+                }
+            else:
+                confidence_interval = None
+
+            # Per-cell SHAP dict {feature_name: contribution}
+            if shap_matrix is not None:
+                shap_row = shap_matrix[i]
+                cell_shap = {
+                    _FEATURE_NAMES[j]: round(float(shap_row[j]), 6)
+                    for j in range(len(_FEATURE_NAMES))
+                }
+            else:
+                cell_shap = None
+
             predictions[cell_ids[i]] = {
                 "score": float(scores_rounded[i]),
                 "level": levels[i],
@@ -231,8 +298,15 @@ class DailyPipeline:
                 "soil_moisture": float(sm_r[i]),
                 "ndvi": float(ndvi_r[i]),
                 "snow_cover": bool(snow_bool[i]),
+                "c_haines": float(c_haines_r[i]) if c_haines_r is not None else None,
+                "confidence_interval": confidence_interval,
+                "shap_values": cell_shap,
                 "next_update": "",
+                "fire_behaviour": None,
             }
+
+        # Step 9: Compute FBP fire behaviour per cell (only when fuel_type available)
+        self._compute_fbp(predictions, grid_df, fwi_results, weather, target_date)
 
         status_msg = f"Pipeline {self._pipeline_status}: {len(predictions)} cells processed"
         logger.info("=== %s ===", status_msg)
@@ -326,6 +400,51 @@ class DailyPipeline:
         self._merge_era5_soil_moisture(weather, target_date, grid_lats, grid_lons)
 
         return weather
+
+    def _fetch_c_haines(
+        self,
+        grid_lats: np.ndarray,
+        grid_lons: np.ndarray,
+    ) -> np.ndarray | None:
+        """Fetch pressure-level data and compute C-Haines for all cells.
+
+        Uses Open-Meteo hourly T850, T500, Td850 for today. Returns an array
+        of C-Haines values (range 0-13) per cell, or None on failure so that
+        the pipeline remains fully functional without pressure-level data.
+
+        A NaN in the raw pressure data (failed cell) maps to None-equivalent
+        in the output — the per-cell None is handled in the predictions loop.
+        """
+        try:
+            from infernis.pipelines.openmeteo_pipeline import OpenMeteoPipeline
+
+            om = OpenMeteoPipeline()
+            pl = om.fetch_pressure_levels(grid_lats, grid_lons)
+
+            t850 = pl["t850"]
+            t500 = pl["t500"]
+            td850 = pl["td850"]
+
+            # Cells where any pressure-level input is missing: leave as NaN
+            valid = np.isfinite(t850) & np.isfinite(t500) & np.isfinite(td850)
+            n = len(grid_lats)
+            c_haines_arr = np.full(n, np.nan)
+            if valid.any():
+                c_haines_arr[valid] = compute_c_haines(t850[valid], t500[valid], td850[valid])
+                logger.info(
+                    "C-Haines: computed for %d/%d cells (mean=%.2f, max=%.2f)",
+                    int(valid.sum()),
+                    n,
+                    float(np.nanmean(c_haines_arr)),
+                    float(np.nanmax(c_haines_arr)),
+                )
+            else:
+                logger.warning("C-Haines: no valid pressure-level data — all cells will be None")
+            return c_haines_arr
+
+        except Exception as e:
+            logger.warning("C-Haines fetch failed: %s — c_haines will be None for all cells", e)
+            return None
 
     def _fetch_era5_weather(self, target_date, grid_lats, grid_lons) -> dict:
         """Fetch ERA5 reanalysis weather (fallback, 5-day lag)."""
@@ -450,6 +569,58 @@ class DailyPipeline:
             "isi": isi,
             "bui": bui,
             "fwi": fwi,
+        }
+
+    def _apply_diurnal_adjustment(
+        self,
+        fwi_results: dict[str, np.ndarray],
+        weather: dict,
+        pipeline_hour: int = 14,
+    ) -> dict[str, np.ndarray]:
+        """Apply diurnal FFMC correction and propagate through ISI → FWI.
+
+        Uses the hour-of-day adjustment from diurnal_ffmc.py (Red Book 2018).
+        Only FFMC, ISI, and FWI are updated; DMC, DC, and BUI are daily-scale
+        and do not change.
+
+        The FWI carry-forward state (_prev_fwi_state) is intentionally NOT
+        touched here — it was written with the unadjusted daily FFMC inside
+        _compute_fwi() and must remain that way for next-day continuity.
+
+        Parameters
+        ----------
+        fwi_results:
+            Dict returned by _compute_fwi() with arrays for each FWI component.
+        weather:
+            Weather dict; temperature_c and rh_pct are used for the adjustment.
+        pipeline_hour:
+            Local hour at which the pipeline runs (default 14 for 14:00 PT).
+
+        Returns
+        -------
+        Updated fwi_results dict with adjusted ffmc, isi, and fwi arrays.
+        """
+        n = len(fwi_results["ffmc"])
+        temp = weather.get("temperature_c", np.full(n, 20.0))
+        rh = weather.get("rh_pct", np.full(n, 40.0))
+
+        adj_ffmc = adjust_ffmc_diurnal(fwi_results["ffmc"], temp, rh, hour=pipeline_hour)
+        adj_isi = self.fwi_service._vec_isi(weather.get("wind_kmh", np.full(n, 10.0)), adj_ffmc)
+        adj_fwi = self.fwi_service._vec_fwi(adj_isi, fwi_results["bui"])
+
+        logger.debug(
+            "Diurnal FFMC adjustment at hour=%d: mean Δffmc=%.2f, mean Δisi=%.2f, mean Δfwi=%.2f",
+            pipeline_hour,
+            float(np.mean(adj_ffmc - fwi_results["ffmc"])),
+            float(np.mean(adj_isi - fwi_results["isi"])),
+            float(np.mean(adj_fwi - fwi_results["fwi"])),
+        )
+
+        return {
+            **fwi_results,
+            "ffmc": adj_ffmc,
+            "isi": adj_isi,
+            "fwi": adj_fwi,
         }
 
     def _fetch_satellite(self, target_date, grid_lats, grid_lons) -> dict:
@@ -607,6 +778,141 @@ class DailyPipeline:
             scores = 0.3 * temp_norm + 0.3 * soil_norm + 0.15 * wind_norm + 0.25 * fwi_norm
             scores += np.random.normal(0, 0.02, n)
             return np.clip(scores, 0.0, 1.0)
+
+    def _compute_shap(self, features: np.ndarray) -> np.ndarray | None:
+        """Compute SHAP values for all cells using TreeSHAP (optional, graceful).
+
+        Returns a [n_cells, n_features] array of per-feature SHAP contributions,
+        or None if the model is not a real XGBoost Booster, shap is not installed,
+        or computation fails for any reason.
+        """
+        if self._model is None:
+            return None
+
+        try:
+            from infernis.pipelines.data_processor import FEATURE_NAMES
+            from infernis.services.explainability import ExplainabilityService
+
+            svc = ExplainabilityService(self._model, FEATURE_NAMES)
+            shap_matrix = svc.compute_shap_values(features)
+            if shap_matrix is not None:
+                logger.info(
+                    "SHAP: computed %d × %d values (mean |shap|=%.4f)",
+                    shap_matrix.shape[0],
+                    shap_matrix.shape[1],
+                    float(np.mean(np.abs(shap_matrix))),
+                )
+            return shap_matrix
+        except Exception as e:
+            logger.warning("SHAP computation failed (non-fatal): %s", e)
+            return None
+
+    def _predict_quantiles(
+        self, features: np.ndarray
+    ) -> tuple[np.ndarray | None, np.ndarray | None]:
+        """Run quantile regression inference for confidence interval bounds.
+
+        Returns ``(lower_bounds, upper_bounds)`` arrays clipped to ``[0, 1]``
+        with guaranteed ``lower[i] <= upper[i]``, or ``(None, None)`` when
+        quantile models are not loaded.
+        """
+        if self._quantile_lower is None or self._quantile_upper is None:
+            return None, None
+
+        try:
+            from infernis.training.quantile_trainer import predict_quantiles
+
+            lower, upper = predict_quantiles(features, self._quantile_lower, self._quantile_upper)
+            logger.info(
+                "Quantile CI: lower=[%.3f, %.3f] upper=[%.3f, %.3f]",
+                float(lower.min()),
+                float(lower.max()),
+                float(upper.min()),
+                float(upper.max()),
+            )
+            return lower, upper
+        except Exception as e:
+            logger.warning("Quantile inference failed: %s — CI will be None", e)
+            return None, None
+
+    def _compute_fbp(
+        self,
+        predictions: dict,
+        grid_df,
+        fwi_results: dict[str, np.ndarray],
+        weather: dict,
+        target_date,
+    ) -> None:
+        """Compute FBP fire behaviour for each grid cell and attach to predictions.
+
+        Only runs when fuel_type column is present in grid_df. Per-cell failures
+        are skipped silently (fire_behaviour remains None for that cell).
+
+        Parameters
+        ----------
+        predictions:
+            Dict mapping cell_id → prediction dict (mutated in place).
+        grid_df:
+            Grid DataFrame containing fuel_type, slope_deg, aspect_deg, etc.
+        fwi_results:
+            Dict of FWI arrays from _compute_fwi() / _apply_diurnal_adjustment().
+        weather:
+            Weather dict from _fetch_weather().
+        target_date:
+            Pipeline run date (used for Julian day computation).
+        """
+        if "fuel_type" not in grid_df.columns:
+            logger.debug("FBP skipped: fuel_type column not present in grid_df")
+            return
+
+        from infernis.services.fbp_service import compute_fire_behaviour
+
+        cell_ids = grid_df["cell_id"].values
+        fuel_types = grid_df["fuel_type"].values
+        lats = grid_df["lat"].values
+        lons = grid_df["lon"].values
+        slopes = grid_df.get("slope_deg", pd.Series(np.zeros(len(grid_df)))).fillna(0).values
+        aspects = grid_df.get("aspect_deg", pd.Series(np.zeros(len(grid_df)))).fillna(0).values
+        elevations = (
+            grid_df.get("elevation_m", pd.Series(np.zeros(len(grid_df)))).fillna(0).values
+        )
+
+        bui_arr = fwi_results["bui"]
+        ffmc_arr = fwi_results["ffmc"]
+        wind_arr = weather.get("wind_kmh", np.full(len(cell_ids), 10.0))
+        wind_dir_arr = weather.get("wind_dir_deg", np.full(len(cell_ids), 0.0))
+
+        month = target_date.month
+        day = target_date.day
+
+        fbp_ok = 0
+        for i, cell_id in enumerate(cell_ids):
+            if cell_id not in predictions:
+                continue
+            fuel = str(fuel_types[i]) if fuel_types[i] else "NF"
+            try:
+                fb = compute_fire_behaviour(
+                    fuel_type=fuel,
+                    ffmc=float(ffmc_arr[i]),
+                    bui=float(bui_arr[i]),
+                    wind_speed=float(wind_arr[i]),
+                    wind_direction=float(wind_dir_arr[i]),
+                    slope=float(slopes[i]),
+                    aspect=float(aspects[i]),
+                    latitude=float(lats[i]),
+                    longitude=float(lons[i]),
+                    elevation=float(elevations[i]),
+                    month=month,
+                    day=day,
+                )
+                predictions[cell_id]["fire_behaviour"] = fb
+                fbp_ok += 1
+            except Exception as exc:
+                logger.debug("FBP skipped for cell %s: %s", cell_id, exc)
+
+        logger.info(
+            "FBP: computed for %d/%d cells", fbp_ok, len(cell_ids)
+        )
 
     def _predict_cnn(
         self,

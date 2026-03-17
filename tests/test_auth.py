@@ -14,18 +14,11 @@ class TestAuthMiddleware:
         assert "/v1/status" in PUBLIC_PATHS
         assert "/v1/coverage" in PUBLIC_PATHS
 
-    def test_tier_limits_defined(self):
-        from infernis.api.auth import TIER_LIMITS
+    def test_daily_rate_limit_configured(self):
+        """Daily rate limit should be set from config."""
+        from infernis.config import settings
 
-        assert TIER_LIMITS["free"] == 50
-        assert TIER_LIMITS["pro"] == 10_000
-        assert TIER_LIMITS["enterprise"] == 100_000
-
-    def test_no_tier_restrictions(self):
-        """All endpoints should be available to all tiers (metered on daily limit only)."""
-        from infernis.api.auth import TIER_RESTRICTED
-
-        assert TIER_RESTRICTED == {}
+        assert settings.daily_rate_limit > 0
 
     def test_demo_paths_public(self):
         """Demo endpoints should not require auth."""

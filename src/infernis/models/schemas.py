@@ -5,6 +5,21 @@ from pydantic import BaseModel, Field
 from infernis.models.enums import BECZone, DangerLevel, FuelType
 
 
+class ConfidenceInterval(BaseModel):
+    """90% prediction confidence interval for a fire risk score.
+
+    Produced by companion XGBoost quantile regression models trained at
+    the 5th and 95th percentiles of the fire risk distribution.  When
+    quantile models are not available (e.g. freshly deployed instance
+    without pre-trained quantile weights), this field is ``None`` in the
+    API response.
+    """
+
+    lower: float = Field(ge=0.0, le=1.0, description="Lower bound (5th percentile)")
+    upper: float = Field(ge=0.0, le=1.0, description="Upper bound (95th percentile)")
+    level: float = Field(default=0.90, description="Confidence level (0.90 = 90%)")
+
+
 class FWIComponents(BaseModel):
     ffmc: float = Field(description="Fine Fuel Moisture Code (0-101)")
     dmc: float = Field(description="Duff Moisture Code")
@@ -22,6 +37,37 @@ class WeatherConditions(BaseModel):
     soil_moisture: float
     ndvi: float
     snow_cover: bool
+    c_haines: Optional[float] = Field(
+        None,
+        description=(
+            "Continuous Haines Index (0-13). Measures atmospheric instability + dryness. "
+            ">8 = high pyroconvection potential. None when pressure-level data unavailable."
+        ),
+    )
+
+
+class FireBehaviour(BaseModel):
+    """Canadian FBP fire behaviour metrics for a single grid cell.
+
+    Computed via cffdrs_py's fire_behaviour_prediction() function.
+    All fields are zero for non-fuel types (NF, WA).
+    """
+
+    rate_of_spread_mpm: float = Field(
+        description="Head fire rate of spread (m/min)"
+    )
+    head_fire_intensity_kwm: float = Field(
+        description="Head fire intensity (kW/m)"
+    )
+    fire_type: str = Field(
+        description="Fire type: 'surface', 'intermittent_crown', or 'active_crown'"
+    )
+    crown_fraction_burned: float = Field(
+        ge=0.0, le=1.0, description="Crown fraction burned [0, 1]"
+    )
+    flame_length_m: float = Field(
+        description="Byram flame length (m)"
+    )
 
 
 class RiskScore(BaseModel):
@@ -57,6 +103,20 @@ class RiskResponse(BaseModel):
     forecast_horizon: str = "24h"
     next_update: str
     change_24h: Optional[float] = Field(None, description="Score change vs yesterday (-1 to +1)")
+    confidence_interval: Optional[ConfidenceInterval] = Field(
+        None,
+        description=(
+            "90% prediction confidence interval for the risk score. "
+            "None when quantile models are not loaded."
+        ),
+    )
+    fire_behaviour: Optional[FireBehaviour] = Field(
+        None,
+        description=(
+            "Canadian FBP fire behaviour metrics (ROS, HFI, fire type, CFB, flame length). "
+            "None when fuel type data is unavailable or FBP computation fails."
+        ),
+    )
 
 
 class ZoneRiskSummary(BaseModel):

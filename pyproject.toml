@@ -35,6 +35,8 @@ dependencies = [
     "torch>=2.0",
     "sentry-sdk[fastapi]>=2.0",
     "cfgrib>=0.9.10",
+    "cffdrs>=0.2",
+    "shap>=0.44",
 ]
 
 [project.optional-dependencies]

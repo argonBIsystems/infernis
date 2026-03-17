@@ -14,6 +14,7 @@ from starlette.requests import Request
 from infernis.api.alerts_routes import alerts_router
 from infernis.api.auth import APIKeyMiddleware
 from infernis.api.batch_routes import batch_router
+from infernis.api.explain_routes import explain_router
 from infernis.api.fires_routes import fires_router
 from infernis.api.history_routes import history_router
 from infernis.api.routes import router
@@ -236,6 +237,7 @@ app.add_middleware(APIKeyMiddleware)
 app.add_middleware(DemoCORSMiddleware)
 
 app.include_router(router)
+app.include_router(explain_router)
 app.include_router(tiles_router)
 app.include_router(batch_router)
 app.include_router(history_router)

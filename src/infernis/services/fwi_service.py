@@ -127,13 +127,15 @@ class FWIService:
         return max(0.0, min(101.0, ffmc))
 
     def _calc_dmc(self, temp, rh, precip, prev_dmc, month):
-        if temp < -1.1:
+        # Van Wagner 1985: temp floor is 1.1°C (not -1.1), below which DMC drying stops
+        if temp < 1.1:
             temp = -1.1
 
         el = self._EL[month]
 
         if precip > 1.5:
-            rk = 1.894 * (precip - 1.5)
+            # Eq. 11: Net rain rw = 0.92*ra - 1.27  (Van Wagner 1985)
+            rw = 0.92 * precip - 1.27
             mo = 20.0 + np.exp(5.6348 - prev_dmc / 43.43)
             if prev_dmc <= 33.0:
                 b = 100.0 / (0.5 + 0.3 * prev_dmc)
@@ -141,7 +143,7 @@ class FWIService:
                 b = 14.0 - 1.3 * np.log(prev_dmc)
             else:
                 b = 6.2 * np.log(prev_dmc) - 17.2
-            mr = mo + 1000.0 * rk / (48.77 + b * rk)
+            mr = mo + 1000.0 * rw / (48.77 + b * rw)
             pr = 244.72 - 43.43 * np.log(mr - 20.0)
             prev_dmc = max(0.0, pr)
 
@@ -151,7 +153,8 @@ class FWIService:
         return max(0.0, dmc)
 
     def _calc_dc(self, temp, precip, prev_dc, month):
-        if temp < -2.8:
+        # Van Wagner 1985: temp floor is 2.8°C (not -2.8), below which DC drying stops
+        if temp < 2.8:
             temp = -2.8
 
         fl = self._FL[month]
@@ -269,14 +272,15 @@ class FWIService:
         return np.clip(ffmc, 0.0, 101.0)
 
     def _vec_dmc(self, temp, rh, precip, prev_dmc, month):
-        temp = np.maximum(temp, -1.1)
+        # Van Wagner 1985: temp floor is 1.1°C; set below-threshold cells to -1.1
+        temp = np.where(temp < 1.1, -1.1, temp)
         el = self._EL[month]
         dmc = prev_dmc.copy()
 
-        # Rain effect
+        # Rain effect (Eq. 11: net rain rw = 0.92*ra - 1.27)
         wet = precip > 1.5
         if np.any(wet):
-            rk = 1.894 * (precip - 1.5)
+            rw = 0.92 * precip - 1.27
             mo = 20.0 + np.exp(5.6348 - dmc / 43.43)
             b = np.where(
                 dmc <= 33.0,
@@ -287,7 +291,7 @@ class FWIService:
                     6.2 * np.log(np.maximum(dmc, 1e-10)) - 17.2,
                 ),
             )
-            mr = mo + 1000.0 * rk / (48.77 + b * rk)
+            mr = mo + 1000.0 * rw / (48.77 + b * rw)
             pr = 244.72 - 43.43 * np.log(np.maximum(mr - 20.0, 1e-10))
             dmc = np.where(wet, np.maximum(pr, 0.0), dmc)
 
@@ -296,7 +300,8 @@ class FWIService:
         return np.maximum(dmc, 0.0)
 
     def _vec_dc(self, temp, precip, prev_dc, month):
-        temp = np.maximum(temp, -2.8)
+        # Van Wagner 1985: temp floor is 2.8°C; set below-threshold cells to -2.8
+        temp = np.where(temp < 2.8, -2.8, temp)
         fl = self._FL[month]
         dc = prev_dc.copy()
 

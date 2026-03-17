@@ -67,6 +67,9 @@ class PredictionDB(Base):
     # Feature vector (for debugging/explainability)
     features = Column(JSONB)
 
+    # SHAP values per feature {feature_name: contribution_float}
+    shap_values = Column(JSONB, nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow)
 
     __table_args__ = (Index("ix_predictions_cell_date", cell_id, prediction_date, unique=True),)
