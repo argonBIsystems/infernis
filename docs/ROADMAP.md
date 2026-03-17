@@ -26,28 +26,24 @@ This roadmap outlines planned features for INFERNIS. Priorities may shift based 
 - [x] Single-tier API with configurable per-key rate limits
 - [x] Webhook hardening (auto-disable after failures, HTTPS-only, cooldown, stale cleanup)
 
+## Shipped (v0.3.0 — March 2026)
+
+### Core Engine Upgrades
+- [x] **FWI validation against cffdrs_py** — cross-validated INFERNIS FWI against NRCan's canonical implementation; found and fixed 3 bugs (DMC rain formula, DMC/DC temperature floor thresholds)
+- [x] **Diurnal FFMC adjustment** — sub-daily fire weather correction using Red Book (3rd ed.) lookup tables; afternoon FFMC at 14:00 PT reflects peak drying conditions (+5-10 FFMC points)
+- [x] **C-Haines atmospheric instability index** — continuous Haines Index computed from Open-Meteo pressure-level data (850/500 hPa); added to `/v1/risk` and `/v1/conditions` responses; C-Haines > 10 = blow-up fire potential
+- [x] **Prediction confidence intervals** — XGBoost quantile regression (`reg:quantileerror`) producing 90% bounds on every risk score; `confidence_interval: {lower, upper, level}` in all risk endpoints
+- [x] **Explainability API (SHAP)** — per-cell, per-feature TreeSHAP contributions computed daily; `GET /v1/explain/{lat}/{lon}` returns top 5 drivers with human-readable descriptions + composed summary; `GET /v1/explain/zones` for province-wide driver aggregation by BEC zone
+- [x] **FBP fire behavior prediction** — rate of spread, head fire intensity, crown fraction burned, fire type, flame length via cffdrs_py FBP system; `fire_behaviour` field in risk responses for all 14 combustible fuel types
+
+### Infrastructure
+- [x] NaN/Inf sanitization across all API endpoints (fixed Victoria 500 errors for coastal edge cells)
+- [x] `--quantile` flag in training script for confidence interval model generation
+- [x] Alembic migration 006: `shap_values` JSONB column on predictions table
+
 ---
 
 ## Next Up
-
-### Explainability API — "Why Is Risk High?"
-**Status:** Planned
-**Impact:** First wildfire API that explains its predictions
-
-Every wildfire system returns a number. None tell you *why*. INFERNIS will be the first to answer: "Risk is HIGH at Kamloops because DMC has been climbing for 8 days, NDVI dropped below seasonal baseline, and forecast winds exceed 30 km/h."
-
-```
-GET /v1/explain/{lat}/{lon}
-```
-
-Returns per-feature SHAP contributions ranked by impact, with human-readable descriptions and a `baseline_comparison` showing today vs. 10-year seasonal average. Powered by TreeSHAP computed during the daily pipeline — deterministic, auditable, no LLM dependency.
-
-```
-GET /v1/explain/{lat}/{lon}/history?days=30  — Driver trends over time
-GET /v1/explain/zones                        — Province-wide: which BEC zones are elevated and why
-```
-
-This is the foundation for everything below. Insurance underwriters need it for decision justification. Fire chiefs need it for crew briefings. Utility operators need it for PSPS decisions. Developers need it for trust and debugging.
 
 ### Insurance Vertical
 **Status:** Planned
@@ -74,12 +70,6 @@ GET  /v1/utility/psps-advisory — System-wide de-energization advisory
 ```
 
 Accept a GeoJSON LineString (transmission corridor), return segment-level fire risk with wind overlay, PSPS score (fire risk + wind + fuel type composite), and vegetation contact risk classification. BC Hydro, FortisBC, and independent power producers have no API for this today.
-
-### Prediction Confidence Intervals
-**Status:** Planned
-**Impact:** Quantified uncertainty — no competitor offers this
-
-Every risk score gains `lower_bound` and `upper_bound` at 90% confidence. Built with XGBoost quantile regression (`reg:quantileerror`). "Risk is 0.42 (0.31–0.55)" is far more actionable than a point estimate alone. Flows into every endpoint: risk, forecast, explain, and all verticals.
 
 ### MCP Server — AI Agent Integration
 **Status:** Planned
@@ -129,27 +119,6 @@ GET /v1/risk/summary?scale=fire_centre
 Risk aggregated at configurable spatial scales: province, fire centre (6), BEC zone (14), regional district (27), or watershed. Each region includes cell count, mean/max risk, cells above HIGH, dominant SHAP driver, and escalation velocity. Enterprise dashboards need rolled-up views, not 84K individual cells.
 
 Boundary data from BC Data Catalogue via [`bcdata_py`](https://github.com/bcgov/bcdata_py) — BC Gov's official Python WFS client for all provincial geodata layers (fire centres, regional districts, watersheds, terrain, admin boundaries). Pip-installable, geopandas-compatible, supports direct PostGIS loading.
-
-### C-Haines Index & Atmospheric Instability
-**Status:** Planned
-**Reference:** [bcgov/wps C-Haines implementation](https://github.com/bcgov/wps)
-
-```
-GET /v1/conditions/{lat}/{lon}  — add c_haines field
-GET /v1/risk/zones              — add c_haines_max per zone
-```
-
-The Continuous Haines Index measures atmospheric instability and dryness — a leading indicator for extreme fire behavior (plume-driven fires, pyroconvection). BC Gov's WPS already computes C-Haines from weather model data (GDPS/HRDPS) and serves it as KML/GeoJSON polygons with 48-72h forecasts.
-
-INFERNIS can compute C-Haines from the same weather model data it already ingests (temperature and dewpoint at 850/700/500 hPa levels) and add it to risk and conditions responses. Low implementation effort, high value — C-Haines > 10 is the strongest atmospheric signal for blow-up fire potential.
-
-### Diurnal FFMC (Sub-Daily Fire Weather)
-**Status:** Planned
-**Reference:** [bcgov/wps](https://github.com/bcgov/wps) + [bcgov/fbp-go](https://github.com/bcgov/fbp-go) diurnal FFMC lookup tables
-
-INFERNIS currently computes daily FFMC. WPS and fbp-go both implement hourly/diurnal FFMC adjustments using Red Book (3rd edition, 2018) lookup tables — correcting for time-of-day temperature and humidity cycles. Afternoon FFMC can be 15-20 points higher than morning, significantly affecting risk accuracy.
-
-Add diurnal FFMC adjustment to the daily pipeline so risk scores reflect afternoon peak conditions rather than daily averages. The lookup tables are published in the CFFDRS Red Book and already implemented in both `bcgov/wps` and `bcgov/fbp-go`.
 
 ### Post-Fire Recovery Monitoring
 **Status:** Planned
@@ -250,20 +219,10 @@ Returns baseline vs. projected annual risk, fire season length projections, and 
 
 Note: projections reflect how future climate conditions would score under the model trained on 2015–2024 data. They do not account for ecosystem adaptation, land use changes, or fire management evolution.
 
-### Fire Behavior Prediction (FBP) & Spread Simulation
+### Fire Spread Simulation API
 **Status:** Research
 **Impact:** Unprecedented as a public API
-**Foundation:** [cffdrs_py](https://github.com/cffdrs/cffdrs_py) — official Python CFFDRS module (FWI + FBP)
-
-INFERNIS currently implements only the FWI (Fire Weather Index) system. The Canadian CFFDRS also includes FBP (Fire Behavior Prediction) — which calculates rate of spread, head fire intensity, crown fraction burned, and fire type (surface/intermittent crown/active crown). An official Python module (`cffdrs_py`) now implements both FWI and FBP with 25+ parameters per cell.
-
-**Phase 1 — FBP integration:**
-- Integrate `cffdrs_py` FBP calculations into the daily pipeline
-- Add fire behavior fields to risk responses: `rate_of_spread_mpm`, `head_fire_intensity_kwm`, `fire_type`, `crown_fraction_burned`
-- Validate INFERNIS's custom FWI implementation against `cffdrs_py` canonical output
-- Cross-reference with BC Gov's open-source [Wildfire Predictive Services](https://github.com/bcgov/wps) (FastAPI + PostGIS, 64 stars, 2,147 commits) for HFI calculator architecture and [fbp-go](https://github.com/bcgov/fbp-go) (9 stars) for FBP field calculation patterns — fire shape ellipse modeling, slope-corrected wind speed, diurnal FFMC lookup tables
-
-**Phase 2 — Spread simulation API:**
+**Foundation:** FBP integration (shipped in v0.3.0) provides rate-of-spread and fire intensity per cell
 
 ```
 POST /v1/simulate/spread
@@ -275,7 +234,7 @@ POST /v1/simulate/spread
 }
 ```
 
-Given an ignition point, use FBP rate-of-spread + wind direction + slope + fuel type to simulate fire perimeter growth. Return GeoJSON polygons for each time step. Uses FWI, FBP, and spatial data INFERNIS already computes daily.
+Given an ignition point, use FBP rate-of-spread + wind direction + slope + fuel type to simulate fire perimeter growth. Return GeoJSON polygons for each time step. Uses FWI, FBP, and spatial data INFERNIS already computes daily. Reference: [bcgov/fbp-go](https://github.com/bcgov/fbp-go) fire shape ellipse modeling.
 
 No public API offers this. Technosylva does it internally for fire agencies. NASA has a prototype digital twin. This would make INFERNIS the most technically ambitious wildfire API in existence.
 
