@@ -36,6 +36,13 @@ This roadmap outlines planned features for INFERNIS. Priorities may shift based 
 - [x] **Explainability API (SHAP)** — per-cell, per-feature TreeSHAP contributions computed daily; `GET /v1/explain/{lat}/{lon}` returns top 5 drivers with human-readable descriptions + composed summary; `GET /v1/explain/zones` for province-wide driver aggregation by BEC zone
 - [x] **FBP fire behavior prediction** — rate of spread, head fire intensity, crown fraction burned, fire type, flame length via cffdrs_py FBP system; `fire_behaviour` field in risk responses for all 14 combustible fuel types
 
+### Location Risk Profile
+- [x] **Location fire risk profile** — `GET /v1/risk/profile/{lat}/{lon}` combining historical fire exposure (10yr/30yr/all-time within 10km), structural susceptibility (empirical fire rate with hierarchical cell→BEC+fuel→BEC fallback), fire regime characteristics, and composite risk rating blending static + live data
+- [x] `fire_statistics` table with pre-computed fire statistics per grid cell
+- [x] `compute_fire_stats` admin CLI command for offline spatial computation
+- [x] BEC zone full name mapping (14 zones)
+- [x] Alembic migration 007: fire_statistics table
+
 ### Infrastructure
 - [x] NaN/Inf sanitization across all API endpoints (fixed Victoria 500 errors for coastal edge cells)
 - [x] `--quantile` flag in training script for confidence interval model generation

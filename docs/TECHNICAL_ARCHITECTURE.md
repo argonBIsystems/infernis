@@ -61,7 +61,8 @@ The system supports 1km (~2.1M cells) and 5km (~84,535 cells) resolutions, deplo
  +-------------+   |     |                                                  |
  | GEE         |---+---->|  DATA FORGE                                      |
  | (Satellite) |   |     |  - ERA5 weather fetch (cdsapi)                   |
- +-------------+   |     |  - FWI computation (vectorized NumPy)                   |
+ +-------------+   |     |  - FWI computation (vectorized NumPy)            |
+                   |     |  - Diurnal FFMC + C-HAINES enrichment            |
                    |     |  - GEE satellite data (NDVI, snow, topo)         |
  +-------------+   |     |  - Lightning density (MSC Datamart)              |
  | MSC Datamart|---+     |  - Static data join (fuel types, BEC, DEM)       |
@@ -94,6 +95,13 @@ The system supports 1km (~2.1M cells) and 5km (~84,535 cells) resolutions, deplo
                          +------------------+-------------------------------+
                                             |
                          +------------------+-------------------------------+
+                         |  POST-PREDICTION SERVICES                        |
+                         |  - SHAP explainability (per-cell drivers)        |
+                         |  - FBP fire behavior (ROS, HFI, CFB)            |
+                         |  - Quantile confidence intervals                 |
+                         +------------------+-------------------------------+
+                                            |
+                         +------------------+-------------------------------+
                          |                  v                               |
                          |  +------------+     +-----------+                |
                          |  | PostgreSQL |     |   Redis   |                |
@@ -107,7 +115,8 @@ The system supports 1km (~2.1M cells) and 5km (~84,535 cells) resolutions, deplo
                          |  |  /v1/risk/{lat}/{lon}   /v1/risk/grid     |  |   | Govt /  |
                          |  |  /v1/risk/heatmap       /v1/risk/zones    |  |-->| Fire    |
                          |  |  /v1/fwi/{lat}/{lon}    /v1/conditions    |  |   | Service |
-                         |  |  /v1/status             /v1/coverage      |  |   +---------+
+                         |  |  /v1/explain/{lat}/{lon} /v1/coverage     |  |   +---------+
+                         |  |  /v1/status                               |  |
                          |  |                                           |  |
                          |  +-------------------------------------------+  |   +---------+
                          |                                                  |   | Insur./ |
@@ -473,6 +482,18 @@ Applies sub-daily Fine Fuel Moisture Code corrections using the **Red Book diurn
 
 Wraps the `cffdrs_py` package to compute **Fire Behavior Prediction (FBP) System** outputs for each grid cell after the primary risk prediction. FBP uses the cell's fuel type, slope, aspect, FWI components, and weather to estimate fire behavior metrics including rate of spread (ROS), head fire intensity (HFI), and crown fraction burned (CFB). These outputs provide actionable suppression intelligence beyond the binary fire/no-fire prediction.
 
+#### Fire Statistics (`services/fire_statistics.py`)
+
+`FireStatisticsService` provides pre-computed, long-term fire risk statistics per grid cell. It loads fire statistics from Redis at startup (alongside predictions and grid cells) and serves them on the hot path without database queries. Each cell's statistics include historical fire exposure (10yr/30yr/all-time within 10km), structural susceptibility with hierarchical fallback (cell → BEC+fuel group → BEC zone), fire regime characteristics (mean return interval, typical severity, dominant cause), and pre-computed percentiles for the composite score.
+
+#### Fire Statistics Pipeline (`services/fire_stats_pipeline.py`)
+
+Offline computation pipeline invoked via the `compute_fire_stats` admin CLI command. Runs the full spatial join of fire_history to grid_cells (10km radius), aggregates exposure by time tier, computes susceptibility scores with hierarchical fallback, derives BEC zone-level fire regime characteristics from all-time records, computes percentile rankings, and batch-upserts results into the `fire_statistics` table and Redis. Processes cells in batches of 500 by BEC zone using a two-stage approach: coarse bounding-box pre-filter via PostGIS GiST index, then exact geodesic distance filtering in Python. Expected runtime: 30-60 minutes for 84K cells. Designed to run once and refresh annually when CNFDB/BC fire data updates.
+
+#### Location Risk Profile (`api/profile_routes.py`)
+
+Serves `GET /v1/risk/profile/{lat}/{lon}` -- comprehensive fire risk assessment combining historical exposure, structural susceptibility, and current conditions into a composite risk rating. Reads fire statistics from Redis and current predictions from the in-memory cache. The composite score is computed at query time: `0.3 * susceptibility_percentile/100 + 0.3 * exposure_percentile/100 + 0.4 * current_daily_score`. Registered on a separate router included before the main risk router in `main.py` to avoid path parameter conflicts with `GET /v1/risk/{lat}/{lon}`.
+
 ---
 
 ## BC Grid System
@@ -713,6 +734,52 @@ CREATE INDEX idx_alerts_api_key_id ON alerts (api_key_id);
 CREATE INDEX idx_alerts_active ON alerts (is_active) WHERE is_active = TRUE;
 ```
 
+### `fire_statistics`
+
+Pre-computed fire statistics per grid cell. Populated by the `compute_fire_stats` admin command and cached in Redis at startup. Refreshed annually when CNFDB/BC fire data updates.
+
+```sql
+CREATE TABLE fire_statistics (
+    id                      SERIAL PRIMARY KEY,
+    cell_id                 VARCHAR(30) UNIQUE NOT NULL,
+
+    -- Historical exposure (10km radius)
+    fires_10yr_count        INTEGER NOT NULL DEFAULT 0,
+    fires_10yr_nearest_km   FLOAT,
+    fires_10yr_largest_ha   FLOAT,
+    fires_10yr_causes       JSONB,
+
+    fires_30yr_count        INTEGER NOT NULL DEFAULT 0,
+    fires_30yr_nearest_km   FLOAT,
+    fires_30yr_largest_ha   FLOAT,
+    fires_30yr_causes       JSONB,
+
+    fires_all_count         INTEGER NOT NULL DEFAULT 0,
+    fires_all_nearest_km    FLOAT,
+    fires_all_largest_ha    FLOAT,
+    fires_all_causes        JSONB,
+    fires_all_record_start  INTEGER,          -- MIN(year) of fires within 10km
+
+    -- Susceptibility
+    susceptibility_score    FLOAT NOT NULL DEFAULT 0.0,
+    susceptibility_percentile INTEGER,
+    susceptibility_label    VARCHAR(20),
+    susceptibility_basis    VARCHAR(20),       -- 'cell', 'bec_fuel', 'bec'
+
+    -- Exposure percentile (for composite score)
+    exposure_percentile     INTEGER,
+
+    -- Fire regime (BEC zone level)
+    mean_return_years       FLOAT,
+    typical_severity        VARCHAR(20),       -- 'low', 'moderate', 'high'
+    dominant_cause          VARCHAR(20),       -- 'lightning', 'human', 'unknown'
+
+    computed_at             TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX ix_fire_statistics_cell ON fire_statistics (cell_id);
+```
+
 ### Table Notes
 
 - **`grid_cells`**: Currently empty in production. The grid is generated in memory at startup and cached in Redis (see Caching Strategy). The table schema exists for future use.
@@ -722,6 +789,10 @@ CREATE INDEX idx_alerts_active ON alerts (is_active) WHERE is_active = TRUE;
 ### Schema Migrations
 
 Database schema is managed via **Alembic**. Migration files are stored in `alembic/versions/`. Migrations are run automatically on deployment via the Railway start command or manually via `alembic upgrade head`.
+
+Notable migrations:
+- **006**: Adds `shap_values JSONB` column to the `predictions` table for per-cell SHAP feature attributions.
+- **007**: Creates `fire_statistics` table for pre-computed per-cell fire exposure, susceptibility, and fire regime data.
 
 ---
 
@@ -1061,7 +1132,7 @@ Demo endpoints return mock data for integration testing. They are public and req
 
 Recent additions to existing endpoint responses:
 
-- **Risk response**: Now includes `change_24h` (score delta vs yesterday's prediction).
+- **Risk response**: Now includes `change_24h` (score delta vs yesterday's prediction), `confidence_lower` and `confidence_upper` (80% CI from quantile models, if loaded), and `fbp` object (rate of spread, head fire intensity, crown fraction burned from FBP).
 - **Forecast response**: Now includes `temperature_c`, `rh_pct`, `wind_kmh`, `precip_24h_mm` per forecast day.
 - **Grid GeoJSON**: Features now include a `color` hex string in properties for direct rendering.
 

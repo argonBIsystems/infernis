@@ -444,6 +444,115 @@ None.
 
 ---
 
+### GET /v1/risk/profile/{lat}/{lon}
+
+**Location fire risk profile.** Returns a comprehensive fire risk assessment combining historical fire exposure (10yr/30yr/all-time within 10km), structural susceptibility (empirical fire rate with hierarchical fallback), fire regime characteristics, and a composite risk rating blending static pre-computed data with current daily conditions.
+
+#### Path Parameters
+
+| Parameter | Type  | Required | Description                                      |
+|-----------|-------|----------|--------------------------------------------------|
+| `lat`     | float | Yes      | Latitude in decimal degrees. Must be within BC.  |
+| `lon`     | float | Yes      | Longitude in decimal degrees. Must be within BC. |
+
+#### Response 200 -- Success
+
+```json
+{
+  "cell_id": "BC-1K-0093841",
+  "location": {"lat": 50.67, "lon": -120.33},
+  "context": {
+    "bec_zone": "IDF",
+    "bec_zone_name": "Interior Douglas-fir",
+    "fuel_type": "C3",
+    "elevation_m": 482,
+    "slope_deg": 12,
+    "aspect_deg": 180
+  },
+
+  "current": {
+    "score": 0.42,
+    "level": "HIGH",
+    "forecast_7day_max": 0.51,
+    "c_haines": 8.2
+  },
+
+  "historical_exposure": {
+    "fires_10yr": {
+      "count": 3,
+      "nearest_km": 2.1,
+      "largest_ha": 450,
+      "causes": {"lightning": 2, "human": 1}
+    },
+    "fires_30yr": {
+      "count": 7,
+      "nearest_km": 0.8,
+      "largest_ha": 1200,
+      "causes": {"lightning": 5, "human": 2}
+    },
+    "fires_all": {
+      "count": 12,
+      "nearest_km": 0.3,
+      "largest_ha": 3400,
+      "causes": {"lightning": 8, "human": 3, "unknown": 1},
+      "record_start": 1962
+    },
+    "radius_km": 10
+  },
+
+  "susceptibility": {
+    "score": 0.034,
+    "percentile": 78,
+    "label": "ABOVE_AVERAGE",
+    "method": "empirical_10yr",
+    "basis": "cell",
+    "fire_regime": {
+      "mean_return_years": 42,
+      "typical_severity": "moderate",
+      "dominant_cause": "lightning"
+    }
+  },
+
+  "composite_risk_rating": {
+    "score": 0.72,
+    "label": "HIGH",
+    "components": {
+      "susceptibility_weight": 0.3,
+      "historical_exposure_weight": 0.3,
+      "current_conditions_weight": 0.4
+    }
+  }
+}
+```
+
+#### Response Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `historical_exposure.fires_{tier}.count` | int | Fire events within 10km in the time window |
+| `historical_exposure.fires_{tier}.nearest_km` | float | Distance to the nearest fire in that window |
+| `historical_exposure.fires_{tier}.largest_ha` | float | Largest fire by area in that window |
+| `historical_exposure.fires_{tier}.causes` | object | Breakdown by cause: `lightning`, `human`, `unknown` |
+| `historical_exposure.fires_all.record_start` | int | Earliest fire year within 10km (null if none) |
+| `susceptibility.score` | float | Empirical daily fire occurrence rate |
+| `susceptibility.percentile` | int | Rank relative to all BC cells (0--100) |
+| `susceptibility.label` | string | `WELL_BELOW_AVERAGE`, `BELOW_AVERAGE`, `AVERAGE`, `ABOVE_AVERAGE`, `WELL_ABOVE_AVERAGE` |
+| `susceptibility.basis` | string | Data resolution: `cell`, `bec_fuel`, or `bec` |
+| `susceptibility.fire_regime` | object | BEC zone-level fire regime (return interval, severity, dominant cause) |
+| `composite_risk_rating.score` | float | Weighted blend: 0.3*susceptibility + 0.3*exposure + 0.4*current |
+| `composite_risk_rating.label` | string | Danger level from composite score |
+
+#### Error Responses
+
+| Status | Description |
+|--------|-------------|
+| 404    | Coordinates outside the BC coverage area. |
+| 429    | Rate limit exceeded. |
+| 503    | Predictions not yet available (daily pipeline hasn't run). |
+| 503    | Fire statistics not yet computed (offline job hasn't run). |
+
+---
+
 ### GET /v1/status
 
 **System health.** Returns the current operational status of the INFERNIS API and its underlying data pipelines. Use this endpoint for monitoring and integration health checks. No rate limit is applied to this endpoint.

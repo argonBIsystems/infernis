@@ -74,3 +74,21 @@ class BECZone(str, Enum):
     SBPS = "SBPS"
     SBS = "SBS"
     SWB = "SWB"
+
+
+BEC_ZONE_NAMES = {
+    "AT": "Alpine Tundra",
+    "BG": "Bunchgrass",
+    "BWBS": "Boreal White and Black Spruce",
+    "CDF": "Coastal Douglas-fir",
+    "CWH": "Coastal Western Hemlock",
+    "ESSF": "Engelmann Spruce-Subalpine Fir",
+    "ICH": "Interior Cedar-Hemlock",
+    "IDF": "Interior Douglas-fir",
+    "MH": "Mountain Hemlock",
+    "MS": "Montane Spruce",
+    "PP": "Ponderosa Pine",
+    "SBPS": "Sub-Boreal Pine-Spruce",
+    "SBS": "Sub-Boreal Spruce",
+    "SWB": "Spruce-Willow-Birch",
+}

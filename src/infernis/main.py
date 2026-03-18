@@ -17,6 +17,7 @@ from infernis.api.batch_routes import batch_router
 from infernis.api.explain_routes import explain_router
 from infernis.api.fires_routes import fires_router
 from infernis.api.history_routes import history_router
+from infernis.api.profile_routes import profile_router
 from infernis.api.routes import router
 from infernis.api.tiles_routes import tiles_router
 from infernis.config import settings
@@ -113,6 +114,18 @@ async def lifespan(app: FastAPI):
 
             set_forecast_cache(forecasts, base_date)
             logger.info("Loaded %d forecast cells from Redis (base: %s)", len(forecasts), base_date)
+
+        try:
+            from infernis.services.cache import load_fire_stats_from_redis
+
+            fire_stats = load_fire_stats_from_redis()
+            if fire_stats:
+                from infernis.api.profile_routes import set_fire_stats_cache
+
+                set_fire_stats_cache(fire_stats)
+                logger.info("Loaded %d fire stat cells from Redis", len(fire_stats))
+        except Exception as e:
+            logger.warning("Fire stats cache restore skipped: %s", e)
     except Exception as e:
         logger.warning("Redis cache restore failed: %s — API will initialize from pipeline", e)
 
@@ -236,6 +249,7 @@ app.add_middleware(
 app.add_middleware(APIKeyMiddleware)
 app.add_middleware(DemoCORSMiddleware)
 
+app.include_router(profile_router)  # BEFORE router — profile must match before {lat}/{lon}
 app.include_router(router)
 app.include_router(explain_router)
 app.include_router(tiles_router)

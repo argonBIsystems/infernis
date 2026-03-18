@@ -154,3 +154,38 @@ class AlertDB(Base):
     disabled_reason = Column(String(100), nullable=True)
     last_triggered = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class FireStatisticsDB(Base):
+    __tablename__ = "fire_statistics"
+
+    id = Column(Integer, primary_key=True)
+    cell_id = Column(String(30), unique=True, nullable=False, index=True)
+
+    fires_10yr_count = Column(Integer, nullable=False, default=0)
+    fires_10yr_nearest_km = Column(Float)
+    fires_10yr_largest_ha = Column(Float)
+    fires_10yr_causes = Column(JSONB)
+
+    fires_30yr_count = Column(Integer, nullable=False, default=0)
+    fires_30yr_nearest_km = Column(Float)
+    fires_30yr_largest_ha = Column(Float)
+    fires_30yr_causes = Column(JSONB)
+
+    fires_all_count = Column(Integer, nullable=False, default=0)
+    fires_all_nearest_km = Column(Float)
+    fires_all_largest_ha = Column(Float)
+    fires_all_causes = Column(JSONB)
+    fires_all_record_start = Column(Integer)
+
+    susceptibility_score = Column(Float, nullable=False, default=0.0)
+    susceptibility_percentile = Column(Integer)
+    susceptibility_label = Column(String(20))
+    susceptibility_basis = Column(String(20))
+
+    exposure_percentile = Column(Integer)
+    mean_return_years = Column(Float)
+    typical_severity = Column(String(20))
+    dominant_cause = Column(String(20))
+
+    computed_at = Column(DateTime, default=datetime.utcnow)

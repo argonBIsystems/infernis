@@ -107,6 +107,14 @@ def cleanup(args):
     print("Cleanup complete. Check logs for details.")
 
 
+def compute_fire_stats(args):
+    """Pre-compute fire statistics for all grid cells."""
+    from infernis.services.fire_stats_pipeline import run_fire_stats_pipeline
+
+    run_fire_stats_pipeline()
+    print("Fire statistics computation complete.")
+
+
 def main():
     parser = argparse.ArgumentParser(description="INFERNIS Admin CLI")
     sub = parser.add_subparsers(dest="command")
@@ -140,6 +148,9 @@ def main():
         "--run-days", type=int, default=0, help="Pipeline run retention days (default: from config)"
     )
 
+    # compute_fire_stats
+    sub.add_parser("compute_fire_stats", help="Pre-compute fire statistics for risk profiles")
+
     args = parser.parse_args()
 
     if args.command == "create_key":
@@ -152,6 +163,8 @@ def main():
         run_pipeline(args)
     elif args.command == "cleanup":
         cleanup(args)
+    elif args.command == "compute_fire_stats":
+        compute_fire_stats(args)
     else:
         parser.print_help()
         sys.exit(1)

@@ -226,6 +226,67 @@ def load_grid_cells_from_redis() -> dict:
     return grid_cells
 
 
+def cache_fire_stats(fire_stats: dict, ttl_seconds: int = 604800):
+    """Persist fire_stats dict to Redis so startup doesn't need to recompute.
+
+    Keys: fire_stats:{cell_id}
+    Default TTL: 7 days (604800s) — stats change infrequently.
+
+    Batches HSET commands in chunks of 10,000 to avoid pipeline buffer overflow.
+    """
+    r = get_redis()
+    if r is None:
+        return 0
+
+    BATCH_SIZE = 10_000
+    count = 0
+    items = list(fire_stats.items())
+
+    for batch_start in range(0, len(items), BATCH_SIZE):
+        batch = items[batch_start : batch_start + BATCH_SIZE]
+        pipe = r.pipeline()
+        for cell_id, stats in batch:
+            pipe.setex(f"fire_stats:{cell_id}", ttl_seconds, json.dumps(stats))
+            count += 1
+        pipe.execute()
+
+    logger.info("Cached %d fire stat cells to Redis (TTL=%ds)", count, ttl_seconds)
+    return count
+
+
+def load_fire_stats_from_redis() -> dict:
+    """Load fire statistics from Redis. Returns dict[cell_id → data].
+
+    Returns empty dict if no keys found or Redis unavailable.
+    """
+    r = get_redis()
+    if r is None:
+        return {}
+
+    BATCH_SIZE = 5000
+    keys = []
+    for key in r.scan_iter("fire_stats:*", count=BATCH_SIZE):
+        keys.append(key)
+
+    if not keys:
+        return {}
+
+    fire_stats = {}
+    for batch_start in range(0, len(keys), BATCH_SIZE):
+        batch_keys = keys[batch_start : batch_start + BATCH_SIZE]
+        pipe = r.pipeline()
+        for k in batch_keys:
+            pipe.get(k)
+        values = pipe.execute()
+        for k, v in zip(batch_keys, values):
+            if v:
+                cell_id = k.removeprefix("fire_stats:")
+                fire_stats[cell_id] = json.loads(v)
+
+    logger.info("Loaded %d fire stat cells from Redis", len(fire_stats))
+    return fire_stats
+
+
 def redis_healthy() -> bool:
     """Check if Redis is reachable."""
     r = get_redis()
