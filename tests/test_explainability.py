@@ -117,11 +117,11 @@ class TestComputeShapValues:
         dmatrix = xgb.DMatrix(sample_X, feature_names=FEATURE_NAMES)
         preds = tiny_xgb_model.predict(dmatrix)
 
-        # SHAP sum (+ base value stored in explainer) ≈ prediction
-        base = explainer._shap_explainer.expected_value
-        if isinstance(base, np.ndarray):
-            base = float(base[0])
-        approx = shap_vals.sum(axis=1) + base
+        # SHAP sum + bias ≈ prediction. With XGBoost native pred_contribs,
+        # the bias is the last column of the full contribs matrix.
+        full_contribs = tiny_xgb_model.predict(dmatrix, pred_contribs=True)
+        bias = full_contribs[:, -1]
+        approx = shap_vals.sum(axis=1) + bias
         np.testing.assert_allclose(approx, preds, atol=1e-3)
 
 

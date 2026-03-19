@@ -1,8 +1,8 @@
-"""SHAP-based explainability service for INFERNIS fire risk predictions.
+"""Explainability service for INFERNIS fire risk predictions.
 
-Uses TreeSHAP (shap.TreeExplainer) for fast, exact per-feature contributions
-from the XGBoost model. Every risk prediction can include a ranked list of the
-top drivers explaining WHY risk is high or low.
+Uses XGBoost's native TreeSHAP implementation (pred_contribs=True) for fast,
+exact per-feature contributions. This avoids the external `shap` library which
+causes C-level crashes (free(): invalid pointer) in some container environments.
 
 Usage:
     svc = ExplainabilityService(model, FEATURE_NAMES)
@@ -84,13 +84,17 @@ _CONTRIBUTION_PHRASES = {
 
 
 class ExplainabilityService:
-    """Wraps shap.TreeExplainer to provide per-cell SHAP-based explainability.
+    """Per-cell SHAP-based explainability using XGBoost's native TreeSHAP.
+
+    Uses `model.predict(dmat, pred_contribs=True)` instead of the external
+    `shap` library. This is the same TreeSHAP algorithm but implemented
+    directly in XGBoost's C++ core — no Python C-extension compatibility
+    issues.
 
     Parameters
     ----------
     model:
-        An XGBoost Booster instance.  Pass None to create a no-op service
-        that returns empty/None results gracefully.
+        An XGBoost Booster instance. Pass None for a no-op service.
     feature_names:
         Ordered list of feature names matching the columns of X.
     """
@@ -98,19 +102,10 @@ class ExplainabilityService:
     def __init__(self, model: Any, feature_names: list[str]):
         self.feature_names = list(feature_names)
         self._model = model
-        self._shap_explainer = None
+        self._ready = model is not None
 
-        if model is None:
-            return
-
-        try:
-            import shap
-
-            self._shap_explainer = shap.TreeExplainer(model)
-            logger.info("ExplainabilityService: TreeExplainer initialized")
-        except Exception as e:
-            logger.warning("ExplainabilityService: TreeExplainer init failed: %s", e)
-            self._shap_explainer = None
+        if self._ready:
+            logger.info("ExplainabilityService: initialized (XGBoost native pred_contribs)")
 
     # ------------------------------------------------------------------
     # Public API
@@ -119,6 +114,10 @@ class ExplainabilityService:
     def compute_shap_values(self, X: np.ndarray) -> np.ndarray | None:
         """Compute SHAP values for all cells in X.
 
+        Uses XGBoost's built-in `pred_contribs=True` which returns an
+        [n_cells, n_features+1] array where the last column is the bias
+        (base value). We strip the bias column and return [n_cells, n_features].
+
         Parameters
         ----------
         X:
@@ -126,19 +125,35 @@ class ExplainabilityService:
 
         Returns
         -------
-        np.ndarray of shape [n_cells, n_features], or None if SHAP is
-        unavailable (no model, init failure, or computation error).
+        np.ndarray of shape [n_cells, n_features], or None on failure.
         """
-        if self._shap_explainer is None:
+        if not self._ready:
             return None
 
         try:
-            shap_matrix = self._shap_explainer.shap_values(X)
-            # For regression models shap_values returns [n, p] directly.
-            # For binary classifiers it may return a list; take index 1.
-            if isinstance(shap_matrix, list):
-                shap_matrix = shap_matrix[1]
-            return np.asarray(shap_matrix, dtype=np.float64)
+            import xgboost as xgb
+
+            # Use the model's own feature names if the input has fewer/more columns
+            model_fnames = self._model.feature_names
+            if model_fnames and X.shape[1] == len(model_fnames):
+                dmat = xgb.DMatrix(X, feature_names=model_fnames)
+            elif model_fnames and X.shape[1] != len(model_fnames):
+                # Input has different feature count than model — slice to match
+                n = len(model_fnames)
+                dmat = xgb.DMatrix(X[:, :n], feature_names=model_fnames)
+            else:
+                dmat = xgb.DMatrix(X)
+            contribs = self._model.predict(dmat, pred_contribs=True)
+            # contribs shape: [n_cells, n_features + 1] — last col is bias
+            shap_matrix = np.asarray(contribs[:, :-1], dtype=np.float64)
+            # Model may have fewer features than FEATURE_NAMES (e.g., 5km model
+            # trained on 24 features vs 28 in FEATURE_NAMES). Pad with zeros.
+            n_model_features = shap_matrix.shape[1]
+            n_expected = len(self.feature_names)
+            if n_model_features < n_expected:
+                pad = np.zeros((shap_matrix.shape[0], n_expected - n_model_features))
+                shap_matrix = np.hstack([shap_matrix, pad])
+            return shap_matrix
         except Exception as e:
             logger.warning("compute_shap_values failed: %s", e)
             return None
@@ -167,7 +182,7 @@ class ExplainabilityService:
         List of driver dicts, each with keys:
             feature, contribution, value, direction, description
         """
-        if self._shap_explainer is None:
+        if not self._ready:
             return []
 
         if shap_values is None:

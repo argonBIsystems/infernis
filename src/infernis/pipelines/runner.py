@@ -114,6 +114,9 @@ def run_daily_pipeline(target_date: date | None = None):
         # Fire webhook alerts for any thresholds exceeded
         _check_alerts(predictions)
 
+        # Recompute fire statistics so /risk/profile uses correct cell IDs
+        _run_fire_stats(grid_cells)
+
         # Clean up old data
         cleanup_old_data()
 
@@ -124,6 +127,31 @@ def run_daily_pipeline(target_date: date | None = None):
         if run_id:
             _log_pipeline_failure(run_id, str(e))
         raise
+
+
+def _run_fire_stats(grid_cells: dict):
+    """Recompute fire statistics and update the profile cache.
+
+    Runs the fire_stats_pipeline using the current grid, then refreshes the
+    in-memory fire stats cache so /v1/risk/profile serves correct data
+    regardless of grid resolution changes.
+    """
+    try:
+        from infernis.services.fire_stats_pipeline import run_fire_stats_pipeline
+
+        run_fire_stats_pipeline()
+
+        # Refresh in-memory cache from Redis
+        from infernis.services.cache import load_fire_stats_from_redis
+
+        fire_stats = load_fire_stats_from_redis()
+        if fire_stats:
+            from infernis.api.profile_routes import set_fire_stats_cache
+
+            set_fire_stats_cache(fire_stats)
+            logger.info("Fire stats cache refreshed: %d cells", len(fire_stats))
+    except Exception as e:
+        logger.warning("Fire stats recomputation failed (non-fatal): %s", e)
 
 
 def _run_forecast_pipeline(

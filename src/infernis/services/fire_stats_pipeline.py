@@ -21,6 +21,8 @@ from typing import Optional
 
 import numpy as np
 
+from infernis.services.cache import get_redis
+
 logger = logging.getLogger(__name__)
 
 # Earth radius used in Haversine
@@ -73,6 +75,103 @@ def match_fires_to_cell(
 # ---------------------------------------------------------------------------
 
 
+def _load_fire_history(db) -> list[dict]:
+    """Load fire history from DB, falling back to raw files if DB is empty."""
+    from infernis.db.fire_history import FireHistoryDB
+
+    logger.info("Loading fire history …")
+    fire_rows = db.query(FireHistoryDB).limit(1).all()
+
+    if fire_rows:
+        # DB has data — load from DB
+        fire_rows = db.query(FireHistoryDB).all()
+        fires = [
+            {
+                "lat": f.lat,
+                "lon": f.lon,
+                "year": f.year,
+                "size_ha": f.size_ha or 0.0,
+                "cause": f.cause or "unknown",
+            }
+            for f in fire_rows
+        ]
+        logger.info("Loaded %d fire records from database", len(fires))
+        return fires
+
+    # Fall back to raw files (same approach as training/feature_builder.py)
+    logger.info("No fire records in DB — loading from raw files …")
+    try:
+        from infernis.training.feature_builder import FeatureBuilder
+
+        builder = FeatureBuilder()
+        df = builder.load_fire_history()
+        if df.empty:
+            logger.warning("No fire history data found in files either")
+            return []
+        fires = []
+        for _, row in df.iterrows():
+            year = row["date"].year if hasattr(row["date"], "year") else int(str(row["date"])[:4])
+            fires.append({
+                "lat": float(row["lat"]),
+                "lon": float(row["lon"]),
+                "year": year,
+                "size_ha": float(row.get("size_ha", 0) or 0),
+                "cause": str(row.get("cause", "unknown") or "unknown"),
+            })
+        logger.info("Loaded %d fire records from raw files", len(fires))
+        return fires
+    except Exception as e:
+        logger.error("Failed to load fire history from files: %s", e)
+        return []
+
+
+def _load_grid_cells(db) -> list[dict]:
+    """Load grid cells from DB, falling back to parquet/in-memory generation."""
+    from infernis.db.tables import GridCellDB
+
+    logger.info("Loading grid cells …")
+    cell_count = db.query(GridCellDB).count()
+
+    if cell_count > 0:
+        cell_rows = db.query(GridCellDB).all()
+        cells = [
+            {
+                "cell_id": c.cell_id,
+                "lat": c.lat,
+                "lon": c.lon,
+                "bec_zone": c.bec_zone or "UNKNOWN",
+                "fuel_type": c.fuel_type or "C3",
+            }
+            for c in cell_rows
+        ]
+        logger.info("Loaded %d grid cells from database", len(cells))
+        return cells
+
+    # Fall back to parquet or in-memory generation
+    logger.info("No grid cells in DB — loading from parquet/generator …")
+    try:
+        from infernis.pipelines.runner import _load_grid
+
+        grid_df = _load_grid()
+        if grid_df is None or len(grid_df) == 0:
+            logger.warning("No grid cells available")
+            return []
+        cells = []
+        for _, row in grid_df.iterrows():
+            cells.append({
+                "cell_id": row["cell_id"],
+                "lat": float(row["lat"]),
+                "lon": float(row["lon"]),
+                "bec_zone": str(row.get("bec_zone", "UNKNOWN") or "UNKNOWN"),
+                "fuel_type": str(row.get("fuel_type", "C3") or "C3"),
+            })
+        logger.info("Loaded %d grid cells from parquet/generator", len(cells))
+        return cells
+    except Exception as e:
+        logger.error("Failed to load grid cells: %s", e)
+        return []
+
+
 def run_fire_stats_pipeline() -> None:
     """Pre-compute fire statistics for every grid cell and persist results.
 
@@ -89,9 +188,7 @@ def run_fire_stats_pipeline() -> None:
      10. Cache to Redis (fire_stats:{cell_id} with no TTL).
     """
     from infernis.db.engine import SessionLocal
-    from infernis.db.fire_history import FireHistoryDB
-    from infernis.db.tables import FireStatisticsDB, GridCellDB
-    from infernis.services.cache import get_redis
+    from infernis.db.tables import FireStatisticsDB
     from infernis.services.fire_statistics import (
         FIRE_SEASON_DAYS_10YR,
         aggregate_fires_by_tier,
@@ -102,33 +199,11 @@ def run_fire_stats_pipeline() -> None:
 
     db = SessionLocal()
     try:
-        logger.info("Loading fire history …")
-        fire_rows = db.query(FireHistoryDB).all()
-        fires_all: list[dict] = [
-            {
-                "lat": f.lat,
-                "lon": f.lon,
-                "year": f.year,
-                "size_ha": f.size_ha or 0.0,
-                "cause": f.cause or "unknown",
-            }
-            for f in fire_rows
-        ]
-        logger.info("Loaded %d fire records", len(fires_all))
+        # Load fire history — try DB first, fall back to raw files
+        fires_all = _load_fire_history(db)
 
-        logger.info("Loading grid cells …")
-        cell_rows = db.query(GridCellDB).all()
-        cells: list[dict] = [
-            {
-                "cell_id": c.cell_id,
-                "lat": c.lat,
-                "lon": c.lon,
-                "bec_zone": c.bec_zone or "UNKNOWN",
-                "fuel_type": c.fuel_type or "C3",
-            }
-            for c in cell_rows
-        ]
-        logger.info("Loaded %d grid cells", len(cells))
+        # Load grid cells — try DB first, fall back to parquet/in-memory
+        cells = _load_grid_cells(db)
 
         # ------------------------------------------------------------------
         # Step 2-4: Match fires to cells and aggregate by tier

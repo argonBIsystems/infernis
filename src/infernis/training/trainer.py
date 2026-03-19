@@ -282,8 +282,12 @@ class FireModelTrainer:
         else:
             X_sample = X
 
-        explainer = shap.TreeExplainer(self.model)
-        shap_values = explainer.shap_values(X_sample)
+        try:
+            explainer = shap.TreeExplainer(self.model)
+            shap_values = explainer.shap_values(X_sample)
+        except Exception as e:
+            logger.warning("SHAP TreeExplainer failed: %s", e)
+            return {}
 
         # Mean absolute SHAP per feature
         mean_abs_shap = np.abs(shap_values).mean(axis=0)

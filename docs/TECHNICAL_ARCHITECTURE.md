@@ -2,7 +2,7 @@
 
 > How the system works under the hood.
 
-**Date**: 2026-03-16
+**Date**: 2026-03-18
 **Status**: Living Document
 
 ---
@@ -802,7 +802,7 @@ Redis serves as the hot cache layer between the daily pipeline and the API. The 
 
 ### Cached Data
 
-Redis now caches four types of data:
+Redis now caches five types of data:
 
 | Cache | Key Pattern | Description |
 |-------|-------------|-------------|
@@ -811,10 +811,11 @@ Redis now caches four types of data:
 | Forecast metadata | `forecast:base_date` | Base date of the current forecast |
 | Grid cells | `grid:cells` (hash map) | All grid cell metadata (lat, lon, BEC zone, fuel type, etc.) |
 | FWI state | `fwi:state:{cell_id}` | Carried-forward FWI moisture codes |
+| Fire statistics | `fire_stats:{cell_id}` | Pre-computed fire exposure, susceptibility, and fire regime per cell (no TTL, refreshed on compute) |
 
 ### Startup Cache Restore
 
-On startup (`main.py` lifespan), the application loads predictions, forecasts, and grid cells from Redis before accepting traffic. This eliminates the 503 "initializing" state after deploys -- the API serves traffic immediately after a deploy without waiting for the pipeline to run.
+On startup (`main.py` lifespan), the application loads predictions, forecasts, grid cells, and fire statistics from Redis before accepting traffic. This eliminates the 503 "initializing" state after deploys -- the API serves traffic immediately after a deploy without waiting for the pipeline to run.
 
 Grid cells are cached separately (key: `grid:cells` hash) because generating them requires geopandas, which OOM'd on Railway's memory-constrained instances.
 
@@ -1102,6 +1103,20 @@ Returns zone-level aggregation of SHAP feature drivers. For each BEC zone, ident
 
 ---
 
+#### `GET /v1/risk/profile/{lat}/{lon}`
+
+Location fire risk profile. Returns historical fire exposure, structural susceptibility, fire regime, and a composite risk rating blending static pre-computed data with current daily conditions.
+
+**Path Parameters:**
+- `lat` (float): Latitude in decimal degrees (WGS84)
+- `lon` (float): Longitude in decimal degrees (WGS84)
+
+**Response:** JSON object with `cell_id`, `location`, `context` (BEC zone name, fuel type, terrain), `current` (today's score and forecast), `historical_exposure` (10yr/30yr/all-time fire counts within 10km), `susceptibility` (empirical rate, percentile, fire regime), and `composite_risk_rating` (weighted blend of all components).
+
+**Auth:** API key required
+
+---
+
 #### `GET /v1/tiles/{z}/{x}/{y}.png`
 
 Slippy map tiles for rendering risk data on web maps. Returns pre-rendered PNG tiles.
@@ -1321,6 +1336,7 @@ API routes are split across multiple files in `src/infernis/api/`:
 | `api/fires_routes.py` | Nearby fires from BCWS (`/v1/fires/near/`) |
 | `api/alerts_routes.py` | Webhook alert CRUD (`/v1/alerts`) |
 | `api/explain_routes.py` | SHAP explainability (`/v1/explain/`) |
+| `api/profile_routes.py` | Location fire risk profile (`/v1/risk/profile/`) |
 | `api/dashboard_routes.py` | Firebase dashboard (private repo only) |
 
 ### System-Level Dependencies (Dockerfile)

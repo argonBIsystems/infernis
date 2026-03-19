@@ -48,12 +48,28 @@ DAILY_VARIABLES = [
 # Max coordinates per batch request (tested: 350 works, 400 hits URI limit)
 BATCH_SIZE = 300
 
-# Pause between batches — 600 req/min limit = 100ms min, use 300ms for safety
-BATCH_DELAY_S = 0.3
+# Open-Meteo free tier rate limits (weighted):
+#   weight = nLocations × (nDays/14) × (nVars/10)
+#   Limits: 600/min, 5000/hour, 10000/day
+#
+# Forecast: 300 coords × (13/14 days) × (10/10 vars) ≈ 279 weight/request
+#   → 5000/279 ≈ 17 safe batches per hour
+# Pressure: 300 coords × (1/14 days) × (3/10 vars) ≈ 6.4 weight/request
+#   → basically unlimited within the hour
+#
+# Strategy: process 15 batches (with safety margin), then pause until
+# the hourly window resets. Total: 282/15 = 19 hours × ~4 min pause ≈ 4.5h.
+# Better than retry storms that waste all attempts.
+HOURLY_BATCH_BUDGET = 15  # batches before hourly pause
+HOURLY_PAUSE_S = 3600.0  # 1 hour pause to reset the hourly budget
+BATCH_DELAY_S = 5.0  # 5s between batches within an hourly window
 
-# Retry config for rate limiting (429)
+# Retry config for rate limiting (429) — in case we still hit limits
 MAX_RETRIES = 3
-RETRY_BASE_DELAY_S = 5.0  # 5s, 10s, 20s backoff
+RETRY_BASE_DELAY_S = 60.0  # 60s, 120s, 240s backoff
+
+# After hitting a 429, wait for hourly reset
+RATE_LIMIT_COOLDOWN_S = 3600.0
 
 
 class OpenMeteoPipeline:
@@ -119,12 +135,27 @@ class OpenMeteoPipeline:
             BATCH_SIZE,
         )
 
+        hourly_count = 0  # batches sent in current hourly window
+
         with httpx.Client(timeout=60.0) as client:
             for batch_idx in range(n_batches):
                 start = batch_idx * BATCH_SIZE
                 end = min(start + BATCH_SIZE, n_cells)
                 batch_lats = grid_lats[start:end]
                 batch_lons = grid_lons[start:end]
+
+                # Proactive hourly budget: pause before hitting the limit
+                if hourly_count >= HOURLY_BATCH_BUDGET:
+                    remaining = n_batches - batch_idx
+                    logger.info(
+                        "Open-Meteo: hourly budget (%d batches) spent. "
+                        "Pausing %.0fs before continuing (%d batches remaining)",
+                        HOURLY_BATCH_BUDGET,
+                        HOURLY_PAUSE_S,
+                        remaining,
+                    )
+                    time.sleep(HOURLY_PAUSE_S)
+                    hourly_count = 0
 
                 success = False
                 for attempt in range(MAX_RETRIES + 1):
@@ -135,6 +166,7 @@ class OpenMeteoPipeline:
                         self._fill_result(result, batch_data, start, end, forecast_days, start_day)
                         cells_fetched += end - start
                         success = True
+                        hourly_count += 1
                         break
                     except Exception as e:
                         is_rate_limit = "429" in str(e)
@@ -158,10 +190,18 @@ class OpenMeteoPipeline:
                                 e,
                             )
                             cells_failed += end - start
+                            if is_rate_limit:
+                                # Hit hourly limit — reset budget and pause
+                                logger.info(
+                                    "Open-Meteo: rate limit hit, pausing %.0fs",
+                                    RATE_LIMIT_COOLDOWN_S,
+                                )
+                                time.sleep(RATE_LIMIT_COOLDOWN_S)
+                                hourly_count = 0
                             break
 
-                # Progress logging every 50 batches
-                if (batch_idx + 1) % 50 == 0 or batch_idx == n_batches - 1:
+                # Progress logging every 15 batches (matches hourly budget)
+                if (batch_idx + 1) % HOURLY_BATCH_BUDGET == 0 or batch_idx == n_batches - 1:
                     logger.info(
                         "Open-Meteo progress: %d/%d batches (%d cells fetched, %d failed)",
                         batch_idx + 1,
@@ -170,7 +210,7 @@ class OpenMeteoPipeline:
                         cells_failed,
                     )
 
-                # Rate limit pause between batches
+                # Brief pause between batches within the hourly window
                 if batch_idx < n_batches - 1 and success:
                     time.sleep(BATCH_DELAY_S)
 
@@ -339,6 +379,14 @@ class OpenMeteoPipeline:
             n_batches,
         )
 
+        # Pressure levels are very lightweight (1 day, 3 vars, weight ≈ 6.4/batch)
+        # so we can process ~780 batches per hour — no hourly budgeting needed.
+        # But share the overall budget with forecast, so if the forecast just ran
+        # we may still be in the rate-limited window. Use shorter retries and
+        # give up faster — C-Haines is optional (pipeline continues without it).
+
+        consecutive_failures = 0
+
         with httpx.Client(timeout=60.0) as client:
             for batch_idx in range(n_batches):
                 start = batch_idx * BATCH_SIZE
@@ -347,7 +395,10 @@ class OpenMeteoPipeline:
                 batch_lons = grid_lons[start:end]
 
                 success = False
-                for attempt in range(MAX_RETRIES + 1):
+                # Shorter retries for pressure levels (C-Haines is optional)
+                pl_max_retries = 2
+                pl_retry_delay = 30.0  # 30s, 60s — then give up
+                for attempt in range(pl_max_retries + 1):
                     try:
                         batch_data = self._fetch_pressure_level_batch(
                             client, batch_lats, batch_lons
@@ -358,15 +409,15 @@ class OpenMeteoPipeline:
                         break
                     except Exception as e:
                         is_rate_limit = "429" in str(e)
-                        if is_rate_limit and attempt < MAX_RETRIES:
-                            delay = RETRY_BASE_DELAY_S * (2**attempt)
+                        if is_rate_limit and attempt < pl_max_retries:
+                            delay = pl_retry_delay * (2**attempt)
                             logger.warning(
                                 "Open-Meteo pressure-level batch %d/%d rate-limited "
                                 "(attempt %d/%d), retrying in %.0fs",
                                 batch_idx + 1,
                                 n_batches,
                                 attempt + 1,
-                                MAX_RETRIES + 1,
+                                pl_max_retries + 1,
                                 delay,
                             )
                             time.sleep(delay)
@@ -379,6 +430,26 @@ class OpenMeteoPipeline:
                             )
                             cells_failed += end - start
                             break
+
+                # If 2+ consecutive batches fail from rate limiting, bail out early.
+                # C-Haines is optional — no point blocking the pipeline for 20+ min.
+                if not success:
+                    consecutive_failures += 1
+                else:
+                    consecutive_failures = 0
+
+                if consecutive_failures >= 2:
+                    remaining = n_batches - batch_idx - 1
+                    logger.warning(
+                        "Open-Meteo pressure levels: 2 consecutive failures, "
+                        "skipping remaining %d batches (C-Haines is optional)",
+                        remaining,
+                    )
+                    cells_failed += sum(
+                        min((b + 1) * BATCH_SIZE, n_cells) - b * BATCH_SIZE
+                        for b in range(batch_idx + 1, n_batches)
+                    )
+                    break
 
                 if batch_idx < n_batches - 1 and success:
                     time.sleep(BATCH_DELAY_S)
