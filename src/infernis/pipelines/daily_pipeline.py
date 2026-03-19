@@ -365,28 +365,49 @@ class DailyPipeline:
     def _fetch_weather(self, target_date, grid_lats, grid_lons) -> dict:
         """Fetch weather data for the grid.
 
+        Uses a coarse weather grid (~25km, ~1,400 points) and interpolates
+        to the 5km prediction grid. This reduces Open-Meteo API calls from
+        282 batches to ~5, eliminating rate-limit issues on the free tier.
+
         Primary: Open-Meteo GEM (same-day, ECCC's operational model).
         Fallback: ERA5 reanalysis (5-day lag, but has soil moisture).
-        Soil moisture always comes from ERA5 (Open-Meteo GEM doesn't provide it).
         """
         weather = None
 
-        # Primary: Open-Meteo GEM (same-day data)
+        # Primary: Open-Meteo GEM via coarse weather grid
         try:
             from infernis.pipelines.openmeteo_pipeline import OpenMeteoPipeline
+            from infernis.pipelines.weather_grid import (
+                generate_weather_grid,
+                interpolate_forecast_to_prediction_grid,
+            )
+
+            # Generate coarse weather grid (~1,400 points vs 84,535)
+            wx_lats, wx_lons = generate_weather_grid()
 
             om = OpenMeteoPipeline(max_days=self._forecast_max_days)
-            all_weather = om.fetch_forecast_weather(
-                grid_lats,
-                grid_lons,
+            all_weather_coarse = om.fetch_forecast_weather(
+                wx_lats,
+                wx_lons,
                 forecast_days=self._forecast_max_days,
                 include_today=True,
             )
-            if all_weather and 0 in all_weather:
+
+            if all_weather_coarse and 0 in all_weather_coarse:
+                # Interpolate from coarse weather grid to prediction grid
+                all_weather = interpolate_forecast_to_prediction_grid(
+                    all_weather_coarse, wx_lats, wx_lons, grid_lats, grid_lons
+                )
                 weather = all_weather[0]
                 # Store forecast days for the forecast pipeline to reuse
-                self._openmeteo_forecast_weather = {k: v for k, v in all_weather.items() if k >= 1}
-                logger.info("Weather: Open-Meteo GEM (same-day data)")
+                self._openmeteo_forecast_weather = {
+                    k: v for k, v in all_weather.items() if k >= 1
+                }
+                logger.info(
+                    "Weather: Open-Meteo GEM via coarse grid (%d wx points → %d cells)",
+                    len(wx_lats),
+                    len(grid_lats),
+                )
             else:
                 logger.warning("Open-Meteo returned no data for today")
         except Exception as e:
@@ -417,9 +438,20 @@ class DailyPipeline:
         """
         try:
             from infernis.pipelines.openmeteo_pipeline import OpenMeteoPipeline
+            from infernis.pipelines.weather_grid import (
+                generate_weather_grid,
+                interpolate_to_prediction_grid,
+            )
 
+            # Use coarse grid for pressure levels too
+            wx_lats, wx_lons = generate_weather_grid()
             om = OpenMeteoPipeline()
-            pl = om.fetch_pressure_levels(grid_lats, grid_lons)
+            pl_coarse = om.fetch_pressure_levels(wx_lats, wx_lons)
+
+            # Interpolate to prediction grid
+            pl = interpolate_to_prediction_grid(
+                pl_coarse, wx_lats, wx_lons, grid_lats, grid_lons
+            )
 
             t850 = pl["t850"]
             t500 = pl["t500"]
