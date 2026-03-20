@@ -43,10 +43,16 @@ This roadmap outlines planned features for INFERNIS. Priorities may shift based 
 - [x] BEC zone full name mapping (14 zones)
 - [x] Alembic migration 007: fire_statistics table
 
+### Anomaly Detection & MCP Server
+- [x] **Anomaly & trend detection** — `GET /v1/trends/{lat}/{lon}` comparing current risk vs historical susceptibility baseline; departure %, anomaly status (NEAR_NORMAL through RECORD_HIGH), 3-day and 7-day velocity
+- [x] **MCP Server** — auto-generated from OpenAPI spec via fastapi-mcp; all INFERNIS endpoints exposed as tools for Claude, ChatGPT, Cursor, Copilot; mounted at `/mcp`
+
 ### Infrastructure
 - [x] NaN/Inf sanitization across all API endpoints (fixed Victoria 500 errors for coastal edge cells)
 - [x] `--quantile` flag in training script for confidence interval model generation
 - [x] Alembic migration 006: `shap_values` JSONB column on predictions table
+- [x] Coarse weather grid (1,512 points at ~50km) with KDTree interpolation to 84K prediction cells — eliminates Open-Meteo rate limiting (6 batches vs 282)
+- [x] XGBoost native `pred_contribs` for SHAP (replaces shap library C-extension crash)
 
 ---
 
@@ -78,18 +84,6 @@ GET  /v1/utility/psps-advisory — System-wide de-energization advisory
 
 Accept a GeoJSON LineString (transmission corridor), return segment-level fire risk with wind overlay, PSPS score (fire risk + wind + fuel type composite), and vegetation contact risk classification. BC Hydro, FortisBC, and independent power producers have no API for this today.
 
-### MCP Server — AI Agent Integration
-**Status:** Planned
-**Impact:** First wildfire API with native AI agent support
-
-Auto-generate an MCP (Model Context Protocol) server from the INFERNIS OpenAPI spec so AI assistants (Claude, ChatGPT, Cursor, Copilot) can query fire risk in natural language:
-
-> *"What's the fire risk near my cabin in Kamloops this weekend?"*
-> *"Show me all areas in BC where risk exceeds HIGH"*
-> *"Is it safe to have a campfire at Shuswap Lake on Saturday?"*
-
-The MCP server exposes INFERNIS endpoints as tools that LLMs call autonomously. This is the emerging standard for AI-to-API integration (Mapbox, Stripe, Cloudflare already ship MCP servers).
-
 ### Embeddable Risk Widget
 **Status:** Planned
 **Impact:** Opens INFERNIS to non-developers
@@ -106,15 +100,6 @@ A self-contained card showing current risk score, danger level, FWI, weather, an
 ---
 
 ## Near-Term
-
-### Anomaly & Trend Detection
-**Status:** Planned
-
-```
-GET /v1/trends/{lat}/{lon}
-```
-
-Statistical comparison of current conditions vs. 10-year seasonal baseline. Returns departure percentages, anomaly status (`NEAR_NORMAL`, `ABOVE_NORMAL`, `WELL_ABOVE_NORMAL`, `RECORD_HIGH_FOR_DATE`) per feature, and risk escalation velocity (3-day, 7-day rate of change). Answers the question: "Is this unusual?"
 
 ### Multi-Scale Risk Aggregation
 **Status:** Planned

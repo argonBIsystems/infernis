@@ -20,6 +20,7 @@ from infernis.api.history_routes import history_router
 from infernis.api.profile_routes import profile_router
 from infernis.api.routes import router
 from infernis.api.tiles_routes import tiles_router
+from infernis.api.trends_routes import trends_router
 from infernis.config import settings
 
 try:
@@ -257,8 +258,26 @@ app.include_router(batch_router)
 app.include_router(history_router)
 app.include_router(fires_router)
 app.include_router(alerts_router)
+app.include_router(trends_router)
 if dashboard_router is not None:
     app.include_router(dashboard_router)
+
+# MCP Server — exposes INFERNIS endpoints as tools for AI agents
+try:
+    from fastapi_mcp import FastApiMCP
+
+    mcp = FastApiMCP(
+        app,
+        name="INFERNIS",
+        description="BC wildfire risk prediction API — fire risk scores, forecasts, "
+        "explainability, fire behavior, and location risk profiles for British Columbia.",
+    )
+    mcp.mount_http()
+    logger.info("MCP server mounted at /mcp")
+except ImportError:
+    logger.info("fastapi-mcp not installed — MCP server disabled")
+except Exception as e:
+    logger.warning("MCP server failed to mount: %s", e)
 
 # Static file directories and domain routing (only when frontend is present)
 # In Docker (pip-installed), __file__ points to site-packages; fall back to CWD

@@ -3,12 +3,23 @@
 from __future__ import annotations
 
 import logging
+import math
 from datetime import date, timedelta
 
 from fastapi import APIRouter, HTTPException, Query
 
 from infernis.config import settings
 from infernis.models.enums import DangerLevel
+
+
+def _safe(val, default=0.0):
+    if val is None:
+        return default
+    try:
+        f = float(val)
+        return default if (math.isnan(f) or math.isinf(f)) else f
+    except (TypeError, ValueError):
+        return default
 
 logger = logging.getLogger(__name__)
 
@@ -90,16 +101,17 @@ async def get_risk_history(
 
             history = []
             for r in rows:
-                level = DangerLevel.from_score(r.score)
+                score = _safe(r.score)
+                level = DangerLevel.from_score(score)
                 history.append(
                     {
                         "date": r.prediction_date.isoformat(),
-                        "score": round(r.score, 4),
+                        "score": round(score, 4),
                         "level": level.value,
                         "color": level.color,
-                        "fwi": r.fwi,
-                        "temperature_c": r.temperature_c,
-                        "rh_pct": r.rh_pct,
+                        "fwi": _safe(r.fwi),
+                        "temperature_c": _safe(r.temperature_c),
+                        "rh_pct": _safe(r.rh_pct),
                     }
                 )
         finally:

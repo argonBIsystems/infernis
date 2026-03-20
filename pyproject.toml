@@ -37,6 +37,7 @@ dependencies = [
     "cfgrib>=0.9.10",
     "cffdrs @ git+https://github.com/nrcan-cfs-fire/cffdrs_py.git",
     "shap>=0.45.1",
+    "fastapi-mcp>=0.4",
 ]
 
 [project.optional-dependencies]

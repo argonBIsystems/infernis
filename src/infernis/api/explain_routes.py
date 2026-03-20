@@ -16,8 +16,19 @@ ran without SHAP), the endpoints return empty driver lists gracefully.
 from __future__ import annotations
 
 import logging
+import math
 
 from fastapi import APIRouter, HTTPException, Query
+
+
+def _safe(val, default=0.0):
+    if val is None:
+        return default
+    try:
+        f = float(val)
+        return default if (math.isnan(f) or math.isinf(f)) else f
+    except (TypeError, ValueError):
+        return default
 
 import infernis.api.routes as _routes_module
 from infernis.api.routes import _find_nearest_cell, _validate_bc_coords
@@ -69,15 +80,15 @@ def _drivers_from_shap(shap_values: dict | None, feature_values: dict, top_n: in
         direction = "increasing" if contrib > 0 else "decreasing"
         tmpl = FEATURE_DESCRIPTIONS.get(feat, f"{feat} = {{value:.4f}}")
         try:
-            description = tmpl.format(value=float(val))
+            description = tmpl.format(value=_safe(val))
         except Exception:
             description = tmpl
 
         drivers.append(
             {
                 "feature": feat,
-                "contribution": round(float(contrib), 6),
-                "value": float(val),
+                "contribution": round(_safe(contrib), 6),
+                "value": _safe(val),
                 "direction": direction,
                 "description": description,
             }
@@ -190,7 +201,7 @@ async def explain_point(
     return {
         "location": {"lat": lat, "lon": lon},
         "cell_id": cell_id,
-        "risk_score": pred.get("score", 0.0),
+        "risk_score": _safe(pred.get("score")),
         "danger_level": level,
         "timestamp": pred.get("timestamp", ""),
         "drivers": drivers,
@@ -248,7 +259,7 @@ async def explain_zones(
         for feat, contrib in shap_values.items():
             if feat not in zone_data[zone]["feature_shap"]:
                 zone_data[zone]["feature_shap"][feat] = []
-            zone_data[zone]["feature_shap"][feat].append(abs(float(contrib)))
+            zone_data[zone]["feature_shap"][feat].append(abs(_safe(contrib)))
 
     # Build result list
     import numpy as np
@@ -256,7 +267,7 @@ async def explain_zones(
     result = []
     for zone, data in sorted(zone_data.items()):
         feat_means = {
-            feat: float(np.mean(vals))
+            feat: _safe(np.mean(vals))
             for feat, vals in data["feature_shap"].items()
         }
         # Sort features by mean |SHAP| descending and take top_n
