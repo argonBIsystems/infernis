@@ -1,8 +1,11 @@
 """INFERNIS application entry point."""
 
 import logging
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+
+_app_start_time = time.time()
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -341,12 +344,71 @@ else:
 
 @app.get("/health", include_in_schema=False)
 async def health():
-    """Health check endpoint for Railway / load balancers."""
+    """Health check — ArSite health spec v1.0.
+
+    Returns service status, version, uptime, and dependency checks.
+    HTTP 200 = healthy, HTTP 503 = degraded.
+    """
+    import os
+    import time
+
+    from starlette.responses import JSONResponse
+
     from infernis.services.cache import redis_healthy
 
+    # Dependency checks
+    checks = {}
+
+    # Redis
     redis_ok = redis_healthy()
-    return {
-        "status": "ok",
-        "version": settings.app_version,
-        "redis": "connected" if redis_ok else "unavailable",
+    checks["redis"] = "ok" if redis_ok else "error: connection failed"
+
+    # Database
+    try:
+        from infernis.db.engine import SessionLocal
+
+        db = SessionLocal()
+        try:
+            from sqlalchemy import text
+
+            db.execute(text("SELECT 1"))
+            checks["database"] = "ok"
+        finally:
+            db.close()
+    except Exception as e:
+        checks["database"] = f"error: {str(e)[:50]}"
+
+    # Pipeline
+    from infernis.api.routes import _predictions_cache, _last_pipeline_run
+
+    if _predictions_cache:
+        checks["pipeline"] = "ok"
+    elif _last_pipeline_run:
+        checks["pipeline"] = "ok: no predictions cached but pipeline has run"
+    else:
+        checks["pipeline"] = "error: no pipeline run yet"
+
+    # Overall status
+    errors = [v for v in checks.values() if v.startswith("error")]
+    if not errors:
+        status = "healthy"
+    elif len(errors) < len(checks):
+        status = "degraded"
+    else:
+        status = "unhealthy"
+
+    # Version: prefer git SHA from Railway, fall back to app version
+    version = os.environ.get("RAILWAY_GIT_COMMIT_SHA", "")[:8] or settings.app_version
+
+    # Uptime
+    uptime = time.time() - _app_start_time
+
+    body = {
+        "status": status,
+        "version": version,
+        "uptime_seconds": round(uptime),
+        "checks": checks,
     }
+
+    status_code = 200 if status == "healthy" else 503
+    return JSONResponse(content=body, status_code=status_code)
