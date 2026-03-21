@@ -19,8 +19,18 @@ from infernis.services.fire_statistics import (
 class TestAggregateFiresByTier:
     def test_empty_fires(self):
         result = aggregate_fires_by_tier([], current_year=2026)
-        assert result["fires_10yr"] == {"count": 0, "nearest_km": None, "largest_ha": None, "causes": {}}
-        assert result["fires_30yr"] == {"count": 0, "nearest_km": None, "largest_ha": None, "causes": {}}
+        assert result["fires_10yr"] == {
+            "count": 0,
+            "nearest_km": None,
+            "largest_ha": None,
+            "causes": {},
+        }
+        assert result["fires_30yr"] == {
+            "count": 0,
+            "nearest_km": None,
+            "largest_ha": None,
+            "causes": {},
+        }
         assert result["fires_all"]["count"] == 0
         assert result["fires_all"]["record_start"] is None
 
@@ -95,7 +105,7 @@ class TestAggregateFiresByTier:
     def test_mixed_tiers(self):
         fires = [
             {"year": 2024, "distance_km": 1.0, "size_ha": 10.0, "cause": "lightning"},  # 10yr
-            {"year": 2000, "distance_km": 9.0, "size_ha": 500.0, "cause": "human"},    # 30yr only
+            {"year": 2000, "distance_km": 9.0, "size_ha": 500.0, "cause": "human"},  # 30yr only
             {"year": 1980, "distance_km": 7.0, "size_ha": 1000.0, "cause": "lightning"},  # all only
         ]
         result = aggregate_fires_by_tier(fires, current_year=2026)

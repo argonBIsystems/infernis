@@ -47,30 +47,30 @@ import numpy as np
 #            Forest Fire Weather Index System," p. 48-52.
 # ---------------------------------------------------------------------------
 _DIURNAL_BASE: tuple[float, ...] = (
-    -6.0,   # 00:00  overnight — still drying out from prior evening
-    -7.0,   # 01:00
-    -7.5,   # 02:00
-    -8.0,   # 03:00  nadir: peak overnight humidity recovery
-    -8.0,   # 04:00
-    -7.5,   # 05:00
-    -6.5,   # 06:00  sunrise — RH begins to drop
-    -5.0,   # 07:00
-    -3.0,   # 08:00
-    -1.0,   # 09:00
-     1.0,   # 10:00  transitioning through daily reference
-     3.5,   # 11:00
-     5.5,   # 12:00  approaching afternoon peak
-     8.0,   # 13:00
-    10.0,   # 14:00  peak afternoon drying (pipeline run time)
-     9.5,   # 15:00
-     8.0,   # 16:00
-     6.0,   # 17:00
-     3.5,   # 18:00  evening — drying decelerating
-     1.0,   # 19:00
-    -1.0,   # 20:00
-    -3.0,   # 21:00
-    -4.5,   # 22:00
-    -5.5,   # 23:00
+    -6.0,  # 00:00  overnight — still drying out from prior evening
+    -7.0,  # 01:00
+    -7.5,  # 02:00
+    -8.0,  # 03:00  nadir: peak overnight humidity recovery
+    -8.0,  # 04:00
+    -7.5,  # 05:00
+    -6.5,  # 06:00  sunrise — RH begins to drop
+    -5.0,  # 07:00
+    -3.0,  # 08:00
+    -1.0,  # 09:00
+    1.0,  # 10:00  transitioning through daily reference
+    3.5,  # 11:00
+    5.5,  # 12:00  approaching afternoon peak
+    8.0,  # 13:00
+    10.0,  # 14:00  peak afternoon drying (pipeline run time)
+    9.5,  # 15:00
+    8.0,  # 16:00
+    6.0,  # 17:00
+    3.5,  # 18:00  evening — drying decelerating
+    1.0,  # 19:00
+    -1.0,  # 20:00
+    -3.0,  # 21:00
+    -4.5,  # 22:00
+    -5.5,  # 23:00
 )
 
 # Pre-converted to a numpy array for vectorized operations
@@ -82,9 +82,9 @@ _REF_RH_PCT: float = 40.0
 
 # Sensitivity coefficients (empirically tuned to reproduce Red Book magnitudes)
 # Each degree above reference adds this fraction of the base adjustment.
-_TEMP_SENSITIVITY: float = 0.030   # per °C above 20 °C
+_TEMP_SENSITIVITY: float = 0.030  # per °C above 20 °C
 # Each percentage point below reference RH adds this fraction.
-_RH_SENSITIVITY: float = 0.012     # per % RH below 40 %
+_RH_SENSITIVITY: float = 0.012  # per % RH below 40 %
 
 
 def adjust_ffmc_diurnal(

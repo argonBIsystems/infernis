@@ -188,9 +188,7 @@ def save_quantile_models(
     lower_model.save_model(str(lower_path))
     upper_model.save_model(str(upper_path))
 
-    logger.info(
-        "Saved quantile models — lower: %s, upper: %s", lower_path, upper_path
-    )
+    logger.info("Saved quantile models — lower: %s, upper: %s", lower_path, upper_path)
 
 
 def load_quantile_models(
@@ -232,9 +230,7 @@ def load_quantile_models(
         upper_model = xgb.XGBRegressor()
         upper_model.load_model(str(upper_path))
 
-        logger.info(
-            "Loaded quantile models — lower: %s, upper: %s", lower_path, upper_path
-        )
+        logger.info("Loaded quantile models — lower: %s, upper: %s", lower_path, upper_path)
         return lower_model, upper_model
 
     except Exception as exc:
@@ -252,6 +248,5 @@ def _check_xgb_version(xgb) -> None:
         major = 0
     if major < 2:
         raise ImportError(
-            f"XGBoost >= 2.0 required for reg:quantileerror objective "
-            f"(installed: {version_str})"
+            f"XGBoost >= 2.0 required for reg:quantileerror objective (installed: {version_str})"
         )

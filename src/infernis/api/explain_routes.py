@@ -18,7 +18,13 @@ from __future__ import annotations
 import logging
 import math
 
+import infernis.api.routes as _routes_module
 from fastapi import APIRouter, HTTPException, Query
+from infernis.api.routes import _find_nearest_cell, _validate_bc_coords
+from infernis.config import settings
+from infernis.services.explainability import FEATURE_DESCRIPTIONS, ExplainabilityService
+
+logger = logging.getLogger(__name__)
 
 
 def _safe(val, default=0.0):
@@ -30,12 +36,6 @@ def _safe(val, default=0.0):
     except (TypeError, ValueError):
         return default
 
-import infernis.api.routes as _routes_module
-from infernis.api.routes import _find_nearest_cell, _validate_bc_coords
-from infernis.config import settings
-from infernis.services.explainability import ExplainabilityService, FEATURE_DESCRIPTIONS
-
-logger = logging.getLogger(__name__)
 
 explain_router = APIRouter(prefix=settings.api_prefix)
 
@@ -69,8 +69,7 @@ def _drivers_from_shap(shap_values: dict | None, feature_values: dict, top_n: in
 
     # Build (feature, contribution, value) triples sorted by |contribution|
     triples = [
-        (feat, contrib, feature_values.get(feat, 0.0))
-        for feat, contrib in shap_values.items()
+        (feat, contrib, feature_values.get(feat, 0.0)) for feat, contrib in shap_values.items()
     ]
     triples.sort(key=lambda t: abs(t[1]), reverse=True)
     triples = triples[:top_n]
@@ -266,10 +265,7 @@ async def explain_zones(
 
     result = []
     for zone, data in sorted(zone_data.items()):
-        feat_means = {
-            feat: _safe(np.mean(vals))
-            for feat, vals in data["feature_shap"].items()
-        }
+        feat_means = {feat: _safe(np.mean(vals)) for feat, vals in data["feature_shap"].items()}
         # Sort features by mean |SHAP| descending and take top_n
         sorted_feats = sorted(feat_means.items(), key=lambda kv: kv[1], reverse=True)[:top_n]
 

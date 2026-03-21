@@ -5,8 +5,6 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-_app_start_time = time.time()
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
@@ -25,6 +23,8 @@ from infernis.api.routes import router
 from infernis.api.tiles_routes import tiles_router
 from infernis.api.trends_routes import trends_router
 from infernis.config import settings
+
+_app_start_time = time.time()
 
 try:
     from infernis.api.dashboard_routes import dashboard_router

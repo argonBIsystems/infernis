@@ -4,7 +4,6 @@ Reference: Mills & McCaw (2010), The Continuous Haines Index.
 """
 
 import numpy as np
-import pytest
 
 from infernis.services.c_haines import compute_c_haines
 

@@ -30,6 +30,7 @@ LAT = 54.0  # central BC latitude â€” selects the ell01/fl01 tables in cffdrs (â
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def cffdrs_daily(
     temp: float,
     rh: float,
@@ -64,6 +65,7 @@ def assert_within_tolerance(inf: dict[str, float], cf: dict[str, float], label: 
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def svc() -> FWIService:
     return FWIService()
@@ -72,6 +74,7 @@ def svc() -> FWIService:
 # ---------------------------------------------------------------------------
 # Test cases
 # ---------------------------------------------------------------------------
+
 
 class TestFWIValidationAgainstCffdrs:
     """Systematic validation of INFERNIS FWI against the cffdrs canonical implementation."""

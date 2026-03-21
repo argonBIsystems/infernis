@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from collections import Counter
 from statistics import median
-from typing import Optional
 
 # 214 fire-season days × 10 years
 FIRE_SEASON_DAYS_10YR = 2140

@@ -24,7 +24,8 @@ COPY models/training_metrics_1km.json models/training_metrics_1km.json
 COPY models/fire_core_v1.json models/fire_core_v1.json
 COPY models/bec_calibration.json models/bec_calibration.json
 
-# Grid loaded from DB at runtime (too large for build context)
+# Cached grid with topography (avoids GEE call on every restart)
+COPY data/processed/bc_grid_5km.parquet data/processed/bc_grid_5km.parquet
 
 COPY alembic/ alembic/
 COPY alembic.ini .

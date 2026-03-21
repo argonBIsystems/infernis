@@ -34,7 +34,6 @@ PUBLIC_PATHS = {
 PUBLIC_PREFIXES = (f"{settings.api_prefix}/demo", f"{settings.api_prefix}/tiles")
 
 
-
 class APIKeyMiddleware(BaseHTTPMiddleware):
     """Validates API keys and enforces rate limits."""
 

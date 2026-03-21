@@ -400,9 +400,7 @@ class DailyPipeline:
                 )
                 weather = all_weather[0]
                 # Store forecast days for the forecast pipeline to reuse
-                self._openmeteo_forecast_weather = {
-                    k: v for k, v in all_weather.items() if k >= 1
-                }
+                self._openmeteo_forecast_weather = {k: v for k, v in all_weather.items() if k >= 1}
                 logger.info(
                     "Weather: Open-Meteo GEM via coarse grid (%d wx points → %d cells)",
                     len(wx_lats),
@@ -449,9 +447,7 @@ class DailyPipeline:
             pl_coarse = om.fetch_pressure_levels(wx_lats, wx_lons)
 
             # Interpolate to prediction grid
-            pl = interpolate_to_prediction_grid(
-                pl_coarse, wx_lats, wx_lons, grid_lats, grid_lons
-            )
+            pl = interpolate_to_prediction_grid(pl_coarse, wx_lats, wx_lons, grid_lats, grid_lons)
 
             t850 = pl["t850"]
             t500 = pl["t500"]
@@ -905,9 +901,7 @@ class DailyPipeline:
         lons = grid_df["lon"].values
         slopes = grid_df.get("slope_deg", pd.Series(np.zeros(len(grid_df)))).fillna(0).values
         aspects = grid_df.get("aspect_deg", pd.Series(np.zeros(len(grid_df)))).fillna(0).values
-        elevations = (
-            grid_df.get("elevation_m", pd.Series(np.zeros(len(grid_df)))).fillna(0).values
-        )
+        elevations = grid_df.get("elevation_m", pd.Series(np.zeros(len(grid_df)))).fillna(0).values
 
         bui_arr = fwi_results["bui"]
         ffmc_arr = fwi_results["ffmc"]
@@ -942,9 +936,7 @@ class DailyPipeline:
             except Exception as exc:
                 logger.debug("FBP skipped for cell %s: %s", cell_id, exc)
 
-        logger.info(
-            "FBP: computed for %d/%d cells", fbp_ok, len(cell_ids)
-        )
+        logger.info("FBP: computed for %d/%d cells", fbp_ok, len(cell_ids))
 
     def _predict_cnn(
         self,

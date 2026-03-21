@@ -236,7 +236,7 @@ class TestDiurnalIntegration:
             patch.object(pipeline, "_fetch_satellite", return_value=_synthetic_satellite(n)),
             patch.object(pipeline, "_fetch_lightning", return_value=_synthetic_lightning(n)),
         ):
-            result = pipeline.run(target_date=date(2025, 7, 15), grid_df=sample_grid_df)
+            pipeline.run(target_date=date(2025, 7, 15), grid_df=sample_grid_df)
 
         # Build what the daily (unadjusted) FFMC would be
         from infernis.services.fwi_service import FWIService
@@ -257,7 +257,9 @@ class TestDiurnalIntegration:
         for i, cell_id in enumerate(sample_grid_df["cell_id"]):
             stored_ffmc = pipeline._prev_fwi_state[cell_id]["ffmc"]
             np.testing.assert_allclose(
-                stored_ffmc, float(ffmc_daily[i]), rtol=1e-5,
+                stored_ffmc,
+                float(ffmc_daily[i]),
+                rtol=1e-5,
                 err_msg=f"Cell {cell_id}: carry-forward FFMC should be daily (unadjusted)",
             )
 
@@ -333,9 +335,7 @@ class TestConfidenceIntervals:
         assert lb is None
         assert ub is None
 
-    def test_confidence_interval_none_when_no_quantile_models(
-        self, pipeline, sample_grid_df
-    ):
+    def test_confidence_interval_none_when_no_quantile_models(self, pipeline, sample_grid_df):
         """Each prediction cell should have confidence_interval=None when quantile
         models are absent (the default case for a fresh pipeline)."""
         n = len(sample_grid_df)
@@ -465,8 +465,7 @@ class TestFBPIntegration:
                 f"Cell {cell_id}: fire_behaviour should not be None when fuel_type present"
             )
             assert self._REQUIRED_FB_KEYS.issubset(fb.keys()), (
-                f"Cell {cell_id}: fire_behaviour missing keys: "
-                f"{self._REQUIRED_FB_KEYS - fb.keys()}"
+                f"Cell {cell_id}: fire_behaviour missing keys: {self._REQUIRED_FB_KEYS - fb.keys()}"
             )
 
     def test_fire_behaviour_values_are_non_negative(self, pipeline, sample_grid_df):
@@ -485,9 +484,7 @@ class TestFBPIntegration:
                 continue
             assert fb["rate_of_spread_mpm"] >= 0.0, f"Cell {cell_id}: ROS < 0"
             assert fb["head_fire_intensity_kwm"] >= 0.0, f"Cell {cell_id}: HFI < 0"
-            assert 0.0 <= fb["crown_fraction_burned"] <= 1.0, (
-                f"Cell {cell_id}: CFB out of range"
-            )
+            assert 0.0 <= fb["crown_fraction_burned"] <= 1.0, f"Cell {cell_id}: CFB out of range"
             assert fb["flame_length_m"] >= 0.0, f"Cell {cell_id}: flame_length < 0"
 
     def test_fire_behaviour_fire_type_valid(self, pipeline, sample_grid_df):

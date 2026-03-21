@@ -53,21 +53,13 @@ class FireBehaviour(BaseModel):
     All fields are zero for non-fuel types (NF, WA).
     """
 
-    rate_of_spread_mpm: float = Field(
-        description="Head fire rate of spread (m/min)"
-    )
-    head_fire_intensity_kwm: float = Field(
-        description="Head fire intensity (kW/m)"
-    )
+    rate_of_spread_mpm: float = Field(description="Head fire rate of spread (m/min)")
+    head_fire_intensity_kwm: float = Field(description="Head fire intensity (kW/m)")
     fire_type: str = Field(
         description="Fire type: 'surface', 'intermittent_crown', or 'active_crown'"
     )
-    crown_fraction_burned: float = Field(
-        ge=0.0, le=1.0, description="Crown fraction burned [0, 1]"
-    )
-    flame_length_m: float = Field(
-        description="Byram flame length (m)"
-    )
+    crown_fraction_burned: float = Field(ge=0.0, le=1.0, description="Crown fraction burned [0, 1]")
+    flame_length_m: float = Field(description="Byram flame length (m)")
 
 
 class RiskScore(BaseModel):

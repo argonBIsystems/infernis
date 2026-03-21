@@ -128,8 +128,7 @@ async def get_trends(
                 .all()
             )
             history_scores = [
-                {"date": r.prediction_date.isoformat(), "score": _safe(r.score)}
-                for r in rows
+                {"date": r.prediction_date.isoformat(), "score": _safe(r.score)} for r in rows
             ]
         finally:
             db.close()

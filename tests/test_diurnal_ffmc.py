@@ -5,7 +5,6 @@ Afternoon FFMC (14:00) is 15-20 points higher than daily under dry conditions.
 """
 
 import numpy as np
-import pytest
 
 from infernis.services.diurnal_ffmc import adjust_ffmc_diurnal
 
@@ -16,8 +15,8 @@ class TestDiurnalFFMCDirectionality:
     def test_afternoon_higher_than_daily_in_dry_conditions(self):
         """At 14:00, FFMC should be higher than the daily value in dry conditions."""
         daily_ffmc = 85.0
-        temp_c = 30.0   # hot
-        rh_pct = 20.0   # very dry
+        temp_c = 30.0  # hot
+        rh_pct = 20.0  # very dry
         adjusted = adjust_ffmc_diurnal(daily_ffmc, temp_c, rh_pct, hour=14)
         assert adjusted > daily_ffmc, (
             f"Afternoon FFMC {adjusted:.2f} should exceed daily {daily_ffmc:.2f} in dry conditions"
@@ -26,8 +25,8 @@ class TestDiurnalFFMCDirectionality:
     def test_morning_lower_than_daily_due_to_overnight_recovery(self):
         """At 06:00, FFMC should be lower due to overnight humidity recovery."""
         daily_ffmc = 85.0
-        temp_c = 15.0   # cooler morning
-        rh_pct = 70.0   # higher overnight RH
+        temp_c = 15.0  # cooler morning
+        rh_pct = 70.0  # higher overnight RH
         adjusted = adjust_ffmc_diurnal(daily_ffmc, temp_c, rh_pct, hour=6)
         assert adjusted < daily_ffmc, (
             f"Morning FFMC {adjusted:.2f} should be below daily {daily_ffmc:.2f}"
@@ -112,14 +111,18 @@ class TestDiurnalFFMCVectorized:
 
         vec_result = adjust_ffmc_diurnal(daily_ffmc, temp_c, rh_pct, hour)
 
-        scalar_results = np.array([
-            adjust_ffmc_diurnal(float(daily_ffmc[i]), float(temp_c[i]), float(rh_pct[i]), hour)
-            for i in range(len(daily_ffmc))
-        ])
+        scalar_results = np.array(
+            [
+                adjust_ffmc_diurnal(float(daily_ffmc[i]), float(temp_c[i]), float(rh_pct[i]), hour)
+                for i in range(len(daily_ffmc))
+            ]
+        )
 
         np.testing.assert_allclose(
-            vec_result, scalar_results, rtol=1e-6,
-            err_msg="Vectorized result must match element-wise scalar results"
+            vec_result,
+            scalar_results,
+            rtol=1e-6,
+            err_msg="Vectorized result must match element-wise scalar results",
         )
 
     def test_vectorized_returns_array_for_array_input(self):

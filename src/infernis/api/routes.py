@@ -42,6 +42,7 @@ def _safe_float(val, default=0.0):
     except (TypeError, ValueError):
         return default
 
+
 # In-memory store for the latest predictions (populated by pipeline)
 # In production this reads from Redis/PostGIS
 _predictions_cache: dict = {}

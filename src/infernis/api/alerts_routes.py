@@ -106,8 +106,7 @@ async def create_alert(alert: AlertCreate, request: Request):
             if existing_count >= max_alerts:
                 raise HTTPException(
                     status_code=429,
-                    detail=f"Alert limit reached ({max_alerts}). "
-                    f"Delete unused alerts first.",
+                    detail=f"Alert limit reached ({max_alerts}). Delete unused alerts first.",
                 )
 
             # Check for duplicate (same cell + threshold + webhook)

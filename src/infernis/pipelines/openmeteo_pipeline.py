@@ -488,7 +488,9 @@ class OpenMeteoPipeline:
 
         if isinstance(data, dict):
             if "error" in data and data["error"]:
-                raise RuntimeError(f"Open-Meteo pressure-level error: {data.get('reason', 'unknown')}")
+                raise RuntimeError(
+                    f"Open-Meteo pressure-level error: {data.get('reason', 'unknown')}"
+                )
             return [data]
         return data
 

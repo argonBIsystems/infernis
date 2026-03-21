@@ -1,14 +1,14 @@
 """Tests for BEC_ZONE_NAMES mapping in enums.py."""
 
-import pytest
-
 from infernis.models.enums import BECZone, BEC_ZONE_NAMES
 
 
 def test_all_bec_zone_values_have_names():
     """All 14 BECZone enum values must have entries in BEC_ZONE_NAMES."""
     for zone in BECZone:
-        assert zone.value in BEC_ZONE_NAMES, f"Missing name for BECZone.{zone.name} ({zone.value!r})"
+        assert zone.value in BEC_ZONE_NAMES, (
+            f"Missing name for BECZone.{zone.name} ({zone.value!r})"
+        )
 
 
 def test_spot_check_idf():

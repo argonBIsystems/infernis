@@ -16,10 +16,31 @@ logger = logging.getLogger(__name__)
 def initialize_grid(resolution_km: float | None = None) -> pd.DataFrame:
     """Generate the BC grid and populate static topographic features.
 
-    Returns a DataFrame with all grid cells and their static attributes.
-    This is called once during system setup, not during daily pipeline runs.
+    Checks for a cached parquet file with topography first (avoids GEE
+    call on every restart). Falls back to GEE if no cache exists.
     """
     resolution_km = resolution_km or settings.grid_resolution_km
+
+    # Try cached grid with topography (skips GEE entirely)
+    cache_path = f"data/processed/bc_grid_{resolution_km:.0f}km.parquet"
+    try:
+        from pathlib import Path
+
+        if Path(cache_path).exists():
+            grid = pd.read_parquet(cache_path)
+            required = {"cell_id", "lat", "lon", "elevation_m", "bec_zone", "fuel_type"}
+            if required.issubset(set(grid.columns)) and len(grid) > 0:
+                logger.info(
+                    "Loaded cached grid from %s (%d cells, skipping GEE)",
+                    cache_path,
+                    len(grid),
+                )
+                return grid
+            logger.info("Cached grid at %s missing columns, regenerating", cache_path)
+    except Exception as e:
+        logger.info("Could not load cached grid (%s), generating fresh", e)
+
+    # Generate fresh grid with GEE topography
     logger.info("Generating BC grid at %s km resolution...", resolution_km)
     grid = generate_bc_grid(resolution_km)
     n_cells = len(grid)
@@ -31,6 +52,14 @@ def initialize_grid(resolution_km: float | None = None) -> pd.DataFrame:
     # Assign BEC zones and fuel types based on centroid location
     grid = _populate_bec_zones(grid)
     grid = _populate_fuel_types(grid)
+
+    # Cache for next restart (avoid GEE on every boot)
+    try:
+        save_cols = [c for c in grid.columns if c != "geometry"]
+        grid[save_cols].to_parquet(cache_path, index=False)
+        logger.info("Cached grid to %s for future restarts", cache_path)
+    except Exception as e:
+        logger.warning("Could not cache grid to parquet: %s", e)
 
     return grid
 

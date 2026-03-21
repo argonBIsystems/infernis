@@ -17,7 +17,6 @@ import logging
 import math
 from collections import defaultdict
 from datetime import datetime
-from typing import Optional
 
 import numpy as np
 
@@ -111,13 +110,15 @@ def _load_fire_history(db) -> list[dict]:
         fires = []
         for _, row in df.iterrows():
             year = row["date"].year if hasattr(row["date"], "year") else int(str(row["date"])[:4])
-            fires.append({
-                "lat": float(row["lat"]),
-                "lon": float(row["lon"]),
-                "year": year,
-                "size_ha": float(row.get("size_ha", 0) or 0),
-                "cause": str(row.get("cause", "unknown") or "unknown"),
-            })
+            fires.append(
+                {
+                    "lat": float(row["lat"]),
+                    "lon": float(row["lon"]),
+                    "year": year,
+                    "size_ha": float(row.get("size_ha", 0) or 0),
+                    "cause": str(row.get("cause", "unknown") or "unknown"),
+                }
+            )
         logger.info("Loaded %d fire records from raw files", len(fires))
         return fires
     except Exception as e:
@@ -158,13 +159,15 @@ def _load_grid_cells(db) -> list[dict]:
             return []
         cells = []
         for _, row in grid_df.iterrows():
-            cells.append({
-                "cell_id": row["cell_id"],
-                "lat": float(row["lat"]),
-                "lon": float(row["lon"]),
-                "bec_zone": str(row.get("bec_zone", "UNKNOWN") or "UNKNOWN"),
-                "fuel_type": str(row.get("fuel_type", "C3") or "C3"),
-            })
+            cells.append(
+                {
+                    "cell_id": row["cell_id"],
+                    "lat": float(row["lat"]),
+                    "lon": float(row["lon"]),
+                    "bec_zone": str(row.get("bec_zone", "UNKNOWN") or "UNKNOWN"),
+                    "fuel_type": str(row.get("fuel_type", "C3") or "C3"),
+                }
+            )
         logger.info("Loaded %d grid cells from parquet/generator", len(cells))
         return cells
     except Exception as e:
@@ -291,8 +294,8 @@ def run_fire_stats_pipeline() -> None:
         # Step 7: Fire regime per BEC zone
         # ------------------------------------------------------------------
         # Collect zone-level fires for regime calculation
-        zone_fire_sizes: dict[str, list[float]] = defaultdict(list)
-        zone_fire_causes: dict[str, list[str]] = defaultdict(list)
+        defaultdict(list)
+        defaultdict(list)
         zone_burned_ha: dict[str, float] = defaultdict(float)
         zone_area_ha: dict[str, float] = defaultdict(float)  # approx from cell count × 1km²
 
@@ -364,9 +367,9 @@ def run_fire_stats_pipeline() -> None:
         # Step 8: Percentiles
         # ------------------------------------------------------------------
         all_scores = np.array([cell_susceptibility[cid][0] for cid in cell_susceptibility])
-        all_exposure = np.array([
-            cell_tiers[cid]["fires_10yr"]["count"] for cid in cell_susceptibility
-        ], dtype=float)
+        all_exposure = np.array(
+            [cell_tiers[cid]["fires_10yr"]["count"] for cid in cell_susceptibility], dtype=float
+        )
 
         def _percentile_rank(arr: np.ndarray, value: float) -> int:
             if arr.max() == arr.min():
@@ -380,10 +383,13 @@ def run_fire_stats_pipeline() -> None:
         cell_exposure_pct: dict[str, int] = {}
         for cell_id, (score, _) in cell_susceptibility.items():
             pct_s = int(np.round(np.searchsorted(scores_sorted, score) / len(scores_sorted) * 100))
-            pct_e = int(np.round(
-                np.searchsorted(exposure_sorted, cell_tiers[cell_id]["fires_10yr"]["count"])
-                / len(exposure_sorted) * 100
-            ))
+            pct_e = int(
+                np.round(
+                    np.searchsorted(exposure_sorted, cell_tiers[cell_id]["fires_10yr"]["count"])
+                    / len(exposure_sorted)
+                    * 100
+                )
+            )
             cell_susceptibility_pct[cell_id] = min(pct_s, 100)
             cell_exposure_pct[cell_id] = min(pct_e, 100)
 

@@ -17,6 +17,7 @@ import pytest
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_synthetic_dataset(n: int = 1000, n_features: int = 8, seed: int = 42):
     """Create a synthetic fire-risk-like dataset with continuous targets in [0, 1].
 
@@ -44,6 +45,7 @@ def _make_synthetic_dataset(n: int = 1000, n_features: int = 8, seed: int = 42):
 # ---------------------------------------------------------------------------
 # Module-level fixtures (slow to create — train once per session)
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture(scope="module")
 def dataset():
@@ -76,6 +78,7 @@ def trained_models(dataset):
 # Task 7a — train_quantile_models() returns two models
 # ---------------------------------------------------------------------------
 
+
 class TestTrainQuantileModels:
     def test_returns_two_models(self, trained_models):
         lower, upper = trained_models
@@ -95,8 +98,10 @@ class TestTrainQuantileModels:
 
         with pytest.raises(ValueError, match="lower_q.*upper_q"):
             train_quantile_models(
-                dataset["X_train"], dataset["y_train"],
-                lower_q=0.95, upper_q=0.05,
+                dataset["X_train"],
+                dataset["y_train"],
+                lower_q=0.95,
+                upper_q=0.05,
             )
 
     def test_equal_quantiles_raises(self, dataset):
@@ -104,8 +109,10 @@ class TestTrainQuantileModels:
 
         with pytest.raises(ValueError, match="lower_q.*upper_q"):
             train_quantile_models(
-                dataset["X_train"], dataset["y_train"],
-                lower_q=0.5, upper_q=0.5,
+                dataset["X_train"],
+                dataset["y_train"],
+                lower_q=0.5,
+                upper_q=0.5,
             )
 
     def test_empty_input_raises(self):
@@ -130,6 +137,7 @@ class TestTrainQuantileModels:
 # ---------------------------------------------------------------------------
 # Task 7b — lower bound <= upper bound for all predictions
 # ---------------------------------------------------------------------------
+
 
 class TestPredictQuantiles:
     def test_lower_leq_upper_for_all_cells(self, trained_models, dataset):
@@ -181,6 +189,7 @@ class TestPredictQuantiles:
 # Task 7c — coverage test: ~80%+ of true values within 90% CI
 # ---------------------------------------------------------------------------
 
+
 class TestCoverage:
     def test_coverage_at_least_80_percent(self, trained_models, dataset):
         """At 90% nominal coverage, empirical coverage on held-out test >= 80%.
@@ -200,8 +209,7 @@ class TestCoverage:
         coverage = within / len(y_test)
 
         assert coverage >= 0.80, (
-            f"90% CI coverage too low: {coverage:.1%} "
-            f"(expected >= 80% on held-out test set)"
+            f"90% CI coverage too low: {coverage:.1%} (expected >= 80% on held-out test set)"
         )
 
     def test_upper_quantile_mostly_above_lower(self, trained_models, dataset):
@@ -222,6 +230,7 @@ class TestCoverage:
 # ---------------------------------------------------------------------------
 # Task 7d — save and load round-trip
 # ---------------------------------------------------------------------------
+
 
 class TestSaveLoadRoundTrip:
     def test_save_creates_files(self, trained_models, tmp_path):
@@ -253,7 +262,6 @@ class TestSaveLoadRoundTrip:
 
     def test_loaded_predictions_match_original(self, trained_models, dataset, tmp_path):
         """Reloaded models must produce identical predictions."""
-        import xgboost as xgb
 
         from infernis.training.quantile_trainer import (
             load_quantile_models,
@@ -288,7 +296,6 @@ class TestSaveLoadRoundTrip:
     def test_load_missing_upper_returns_none_pair(self, trained_models, tmp_path):
         from infernis.training.quantile_trainer import (
             load_quantile_models,
-            save_quantile_models,
         )
 
         lower, upper = trained_models

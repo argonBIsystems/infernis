@@ -5,8 +5,6 @@ The full run_fire_stats_pipeline() integration path is exercised by the
 admin CLI and manual QA.
 """
 
-import math
-
 import pytest
 
 from infernis.services.fire_stats_pipeline import compute_distance_km, match_fires_to_cell
@@ -98,7 +96,7 @@ class TestMatchFiresToCell:
         fires = [
             self._make_fire(50.01, -120.0),  # ~1.1km — inside 10km
             self._make_fire(50.05, -120.0),  # ~5.5km — inside 10km
-            self._make_fire(50.2, -120.0),   # ~22km — outside 10km
+            self._make_fire(50.2, -120.0),  # ~22km — outside 10km
             self._make_fire(50.15, -120.0),  # ~16km — outside 10km
         ]
         matched = match_fires_to_cell(50.0, -120.0, fires, radius_km=10.0)
@@ -106,5 +104,6 @@ class TestMatchFiresToCell:
 
     def test_default_radius_is_10km(self):
         import inspect
+
         sig = inspect.signature(match_fires_to_cell)
         assert sig.parameters["radius_km"].default == 10.0

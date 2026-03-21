@@ -21,6 +21,7 @@ def _safe(val, default=0.0):
     except (TypeError, ValueError):
         return default
 
+
 logger = logging.getLogger(__name__)
 
 history_router = APIRouter(prefix=settings.api_prefix, tags=["history"])

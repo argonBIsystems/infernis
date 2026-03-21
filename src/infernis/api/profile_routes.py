@@ -84,8 +84,7 @@ async def get_risk_profile(lat: float, lon: float):
         raise HTTPException(
             status_code=503,
             detail=(
-                "Fire statistics not yet computed. "
-                "Run: python -m infernis.admin compute_fire_stats"
+                "Fire statistics not yet computed. Run: python -m infernis.admin compute_fire_stats"
             ),
         )
 

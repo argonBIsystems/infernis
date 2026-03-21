@@ -123,7 +123,9 @@ def main():
     p_key = sub.add_parser("create_key", help="Create a new API key")
     p_key.add_argument("--name", required=True, help="Key name/description")
     p_key.add_argument(
-        "--limit", type=int, default=0,
+        "--limit",
+        type=int,
+        default=0,
         help="Custom daily request limit (default: from INFERNIS_DAILY_RATE_LIMIT)",
     )
 

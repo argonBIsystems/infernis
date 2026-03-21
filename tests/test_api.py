@@ -171,7 +171,13 @@ class TestCHainesInAPI:
             }
         }
         grid = {
-            "BC-5K-000000": {"lat": 50.0, "lon": -122.0, "bec_zone": "IDF", "fuel_type": "C3", "elevation_m": 500},
+            "BC-5K-000000": {
+                "lat": 50.0,
+                "lon": -122.0,
+                "bec_zone": "IDF",
+                "fuel_type": "C3",
+                "elevation_m": 500,
+            },
         }
         set_predictions_cache(preds_with_chaines, grid, "2025-07-15T20:00:00Z")
         r = client.get("/v1/risk/50.0/-122.0")
@@ -232,8 +238,11 @@ class TestConfidenceIntervalInAPI:
         }
         grid = {
             "BC-5K-000000": {
-                "lat": 50.0, "lon": -122.0,
-                "bec_zone": "IDF", "fuel_type": "C3", "elevation_m": 500,
+                "lat": 50.0,
+                "lon": -122.0,
+                "bec_zone": "IDF",
+                "fuel_type": "C3",
+                "elevation_m": 500,
             },
         }
         set_predictions_cache(preds_with_ci, grid, "2025-07-15T20:00:00Z")
@@ -256,19 +265,30 @@ class TestConfidenceIntervalInAPI:
                 "score": 0.60,
                 "level": "VERY_HIGH",
                 "timestamp": "2025-07-15T20:00:00+00:00",
-                "ffmc": 90.0, "dmc": 60.0, "dc": 350.0,
-                "isi": 9.0, "bui": 70.0, "fwi": 22.0,
-                "temperature_c": 32.0, "rh_pct": 18.0, "wind_kmh": 20.0,
-                "precip_24h_mm": 0.0, "soil_moisture": 0.12,
-                "ndvi": 0.40, "snow_cover": False,
+                "ffmc": 90.0,
+                "dmc": 60.0,
+                "dc": 350.0,
+                "isi": 9.0,
+                "bui": 70.0,
+                "fwi": 22.0,
+                "temperature_c": 32.0,
+                "rh_pct": 18.0,
+                "wind_kmh": 20.0,
+                "precip_24h_mm": 0.0,
+                "soil_moisture": 0.12,
+                "ndvi": 0.40,
+                "snow_cover": False,
                 "confidence_interval": {"lower": 0.45, "upper": 0.75, "level": 0.90},
                 "next_update": "",
             }
         }
         grid = {
             "BC-5K-000000": {
-                "lat": 50.0, "lon": -122.0,
-                "bec_zone": "IDF", "fuel_type": "C3", "elevation_m": 500,
+                "lat": 50.0,
+                "lon": -122.0,
+                "bec_zone": "IDF",
+                "fuel_type": "C3",
+                "elevation_m": 500,
             },
         }
         set_predictions_cache(preds_with_ci, grid, "2025-07-15T20:00:00Z")
@@ -329,8 +349,11 @@ class TestFireBehaviourInAPI:
         }
         grid = {
             "BC-5K-000000": {
-                "lat": 50.0, "lon": -122.0,
-                "bec_zone": "IDF", "fuel_type": "C3", "elevation_m": 500,
+                "lat": 50.0,
+                "lon": -122.0,
+                "bec_zone": "IDF",
+                "fuel_type": "C3",
+                "elevation_m": 500,
             },
         }
         set_predictions_cache(preds_with_fb, grid, "2025-07-15T20:00:00Z")
@@ -352,13 +375,23 @@ class TestFireBehaviourInAPI:
 
         preds = {
             "BC-5K-000000": {
-                "score": 0.5, "level": "HIGH",
+                "score": 0.5,
+                "level": "HIGH",
                 "timestamp": "2025-07-15T20:00:00+00:00",
-                "ffmc": 90.0, "dmc": 50.0, "dc": 300.0,
-                "isi": 8.0, "bui": 70.0, "fwi": 20.0,
-                "temperature_c": 30.0, "rh_pct": 20.0, "wind_kmh": 20.0,
-                "precip_24h_mm": 0.0, "soil_moisture": 0.15,
-                "ndvi": 0.45, "snow_cover": False, "next_update": "",
+                "ffmc": 90.0,
+                "dmc": 50.0,
+                "dc": 300.0,
+                "isi": 8.0,
+                "bui": 70.0,
+                "fwi": 20.0,
+                "temperature_c": 30.0,
+                "rh_pct": 20.0,
+                "wind_kmh": 20.0,
+                "precip_24h_mm": 0.0,
+                "soil_moisture": 0.15,
+                "ndvi": 0.45,
+                "snow_cover": False,
+                "next_update": "",
                 "fire_behaviour": {
                     "rate_of_spread_mpm": 5.0,
                     "head_fire_intensity_kwm": 2000.0,
@@ -370,8 +403,11 @@ class TestFireBehaviourInAPI:
         }
         grid = {
             "BC-5K-000000": {
-                "lat": 50.0, "lon": -122.0,
-                "bec_zone": "IDF", "fuel_type": "C3", "elevation_m": 500,
+                "lat": 50.0,
+                "lon": -122.0,
+                "bec_zone": "IDF",
+                "fuel_type": "C3",
+                "elevation_m": 500,
             },
         }
         set_predictions_cache(preds, grid, "2025-07-15T20:00:00Z")

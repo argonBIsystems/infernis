@@ -55,9 +55,7 @@ def generate_weather_grid() -> tuple[np.ndarray, np.ndarray]:
     return weather_lats, weather_lons
 
 
-def build_interpolation_tree(
-    weather_lats: np.ndarray, weather_lons: np.ndarray
-) -> cKDTree:
+def build_interpolation_tree(weather_lats: np.ndarray, weather_lons: np.ndarray) -> cKDTree:
     """Build a KDTree from weather grid coordinates for fast nearest-neighbor lookup."""
     coords = np.column_stack([weather_lats, weather_lons])
     return cKDTree(coords)

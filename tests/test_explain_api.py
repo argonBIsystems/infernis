@@ -15,12 +15,34 @@ from infernis.api.routes import set_predictions_cache
 # ---------------------------------------------------------------------------
 
 _FEATURE_NAMES = [
-    "ffmc", "dmc", "dc", "isi", "bui", "fwi",
-    "temperature_c", "rh_pct", "wind_kmh", "wind_dir_deg", "precip_24h_mm",
-    "soil_moisture_1", "soil_moisture_2", "soil_moisture_3", "soil_moisture_4",
-    "evapotrans_mm", "ndvi", "snow_cover", "lai",
-    "elevation_m", "slope_deg", "aspect_deg", "hillshade", "distance_to_road_km",
-    "doy_sin", "doy_cos", "lightning_24h", "lightning_72h",
+    "ffmc",
+    "dmc",
+    "dc",
+    "isi",
+    "bui",
+    "fwi",
+    "temperature_c",
+    "rh_pct",
+    "wind_kmh",
+    "wind_dir_deg",
+    "precip_24h_mm",
+    "soil_moisture_1",
+    "soil_moisture_2",
+    "soil_moisture_3",
+    "soil_moisture_4",
+    "evapotrans_mm",
+    "ndvi",
+    "snow_cover",
+    "lai",
+    "elevation_m",
+    "slope_deg",
+    "aspect_deg",
+    "hillshade",
+    "distance_to_road_km",
+    "doy_sin",
+    "doy_cos",
+    "lightning_24h",
+    "lightning_72h",
 ]
 
 
@@ -84,8 +106,9 @@ def client_with_data():
     app.include_router(explain_router)
 
     cell_ids = ["CELL_001", "CELL_002", "CELL_003"]
-    predictions = {cid: _make_prediction(cid, score=0.4 + i * 0.1, seed=i)
-                   for i, cid in enumerate(cell_ids)}
+    predictions = {
+        cid: _make_prediction(cid, score=0.4 + i * 0.1, seed=i) for i, cid in enumerate(cell_ids)
+    }
     grid_cells = _make_grid_cells(*cell_ids)
     set_predictions_cache(predictions, grid_cells, "2026-03-15T14:00:00+00:00")
 
@@ -191,8 +214,6 @@ class TestExplainPoint:
     def test_drivers_fallback_without_shap(self):
         """When shap_values is None in cache, endpoint returns graceful response."""
         from fastapi import FastAPI
-
-        from infernis.api import routes as _r
 
         app = FastAPI()
         app.include_router(explain_router)
