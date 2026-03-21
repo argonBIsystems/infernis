@@ -83,12 +83,17 @@ def populate_cache():
 class TestHealth:
     def test_health(self, client):
         r = client.get("/health")
-        assert r.status_code == 200
-        assert r.json()["status"] == "ok"
+        assert r.status_code in (200, 503)
+        assert r.json()["status"] in ("healthy", "degraded", "unhealthy")
 
-    def test_health_has_redis_status(self, client):
+    def test_health_arsite_spec(self, client):
         r = client.get("/health")
-        assert "redis" in r.json()
+        data = r.json()
+        assert "status" in data
+        assert "version" in data
+        assert "uptime_seconds" in data
+        assert "checks" in data
+        assert isinstance(data["checks"], dict)
 
 
 class TestRiskEndpoint:
