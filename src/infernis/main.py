@@ -18,6 +18,7 @@ from infernis.api.batch_routes import batch_router
 from infernis.api.explain_routes import explain_router
 from infernis.api.fires_routes import fires_router
 from infernis.api.history_routes import history_router
+from infernis.api.insurance_routes import insurance_router
 from infernis.api.profile_routes import profile_router
 from infernis.api.routes import router
 from infernis.api.tiles_routes import tiles_router
@@ -276,6 +277,7 @@ app.include_router(batch_router)
 app.include_router(history_router)
 app.include_router(fires_router)
 app.include_router(alerts_router)
+app.include_router(insurance_router)
 app.include_router(trends_router)
 if dashboard_router is not None:
     app.include_router(dashboard_router)
