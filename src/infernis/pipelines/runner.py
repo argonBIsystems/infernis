@@ -119,8 +119,10 @@ def run_daily_pipeline(target_date: date | None = None):
         # Fire webhook alerts for any thresholds exceeded
         _check_alerts(predictions)
 
-        # Recompute fire statistics so /risk/profile uses correct cell IDs
-        _run_fire_stats(grid_cells)
+        # Fire statistics are pre-computed offline and uploaded to Redis.
+        # Do NOT recompute here — the container lacks the raw fire data files
+        # (data/raw/cnfdb/ etc.) and would overwrite good data with zeros.
+        # To update fire stats: run locally and upload via SSH.
 
         # Clean up old data
         cleanup_old_data()
