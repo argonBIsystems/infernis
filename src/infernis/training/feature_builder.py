@@ -100,15 +100,22 @@ class FeatureBuilder:
                     (c for c in gdf.columns if "size" in c.lower() or "area" in c.lower()), None
                 )
 
+                # Map CNFDB CAUSE codes: H=human, N=lightning, U=unknown
+                cause_map = {"H": "human", "H-PB": "human", "N": "lightning", "U": "unknown", "RE": "unknown"}
+                cause_col = next((c for c in gdf.columns if c.upper() == "CAUSE"), None)
+
                 for _, row in gdf.iterrows():
                     lat = row.geometry.y if hasattr(row.geometry, "y") else row.get(lat_col)
                     lon = row.geometry.x if hasattr(row.geometry, "x") else row.get(lon_col)
+                    raw_cause = str(row.get(cause_col, "U")) if cause_col else "unknown"
+                    cause = cause_map.get(raw_cause, "unknown")
                     records.append(
                         {
                             "lat": float(lat) if lat is not None else None,
                             "lon": float(lon) if lon is not None else None,
                             "date": str(row.get(date_col, "")) if date_col else None,
                             "size_ha": float(row.get(size_col, 0)) if size_col else 0,
+                            "cause": cause,
                             "source": "cnfdb",
                         }
                     )
@@ -168,12 +175,21 @@ class FeatureBuilder:
                     size = (
                         row.get("CURRENT_SIZE") or row.get("SIZE_HA") or row.get("FIRE_SIZE") or 0
                     )
+                    # BC incidents cause field
+                    raw_cause = str(row.get("FIRE_CAUSE") or row.get("CAUSE") or "")
+                    if "lightning" in raw_cause.lower() or raw_cause == "N":
+                        cause = "lightning"
+                    elif "human" in raw_cause.lower() or "person" in raw_cause.lower() or raw_cause == "H":
+                        cause = "human"
+                    else:
+                        cause = "unknown"
                     records.append(
                         {
                             "lat": float(lat) if lat is not None else None,
                             "lon": float(lon) if lon is not None else None,
                             "date": str(fire_date) if fire_date else None,
                             "size_ha": float(size) if size else 0,
+                            "cause": cause,
                             "source": "bc_incidents",
                         }
                     )
@@ -209,12 +225,20 @@ class FeatureBuilder:
                         or row.get("CURRENT_SIZE")
                         or 0
                     )
+                    raw_cause = str(row.get("FIRE_CAUSE") or row.get("CAUSE") or "")
+                    if "lightning" in raw_cause.lower() or raw_cause == "N":
+                        cause = "lightning"
+                    elif "human" in raw_cause.lower() or "person" in raw_cause.lower() or raw_cause == "H":
+                        cause = "human"
+                    else:
+                        cause = "unknown"
                     records.append(
                         {
                             "lat": centroid.y,
                             "lon": centroid.x,
                             "date": str(fire_date) if fire_date else None,
                             "size_ha": float(size) if size else 0,
+                            "cause": cause,
                             "source": "bc_perimeters",
                         }
                     )

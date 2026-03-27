@@ -87,9 +87,23 @@ def compute_susceptibility(
 
     group_key = f"{bec_zone}_{fuel_type}"
     if group_cell_counts.get(group_key, 0) >= 10 and group_key in group_rates:
-        return group_rates[group_key], "bec_fuel"
+        score = group_rates[group_key]
+        basis = "bec_fuel"
+    else:
+        score = zone_rates.get(bec_zone, 0.0)
+        basis = "bec"
 
-    return zone_rates.get(bec_zone, 0.0), "bec"
+    # Zero-fire dampening: cells with 0 fires in 10yr cannot exceed
+    # half the zone average. Prevents urban/coastal areas from inheriting
+    # high susceptibility from fire-prone cells elsewhere in their BEC zone.
+    if fires_10yr_count == 0:
+        zone_avg = zone_rates.get(bec_zone, 0.0)
+        cap = zone_avg * 0.5
+        if score > cap:
+            score = cap
+            basis = basis + "_dampened"
+
+    return score, basis
 
 
 def compute_fire_regime(

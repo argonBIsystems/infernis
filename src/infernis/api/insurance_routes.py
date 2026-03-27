@@ -32,6 +32,17 @@ def _safe(val, default=0.0):
         return default
 
 
+# Severity multipliers by BEC zone fire regime
+SEVERITY_FACTORS = {"low": 0.15, "moderate": 0.35, "high": 0.60}
+
+# Fire season length in months by BEC zone
+FIRE_SEASON_MONTHS = {
+    "BWBS": 5, "SBS": 5, "IDF": 7, "ICH": 5, "CWH": 4,
+    "CDF": 4, "PP": 7, "MS": 5, "ESSF": 4, "AT": 3,
+    "SBPS": 5, "BG": 7, "MH": 4, "SWB": 5,
+}
+
+
 class PropertyInput(BaseModel):
     id: str = Field(..., description="Your property identifier")
     lat: float = Field(..., description="Latitude")
@@ -181,6 +192,14 @@ async def assess_portfolio(req: PortfolioRequest):
             "seasonal_risk": _get_seasonal_risk(bec_zone),
             "drivers": drivers,
         }
+
+        # Loss estimate (indicative screening — not actuarially certified)
+        if prop.value_cad and prop.value_cad > 0:
+            severity = SEVERITY_FACTORS.get(stats.get("typical_severity", "low"), 0.15)
+            season_frac = FIRE_SEASON_MONTHS.get(bec_zone, 5) / 12.0
+            estimated_loss = prop.value_cad * composite * severity * season_frac
+            prop_result["estimated_annual_loss_cad"] = round(estimated_loss, 2)
+
         results.append(prop_result)
 
         # Aggregate stats
@@ -208,6 +227,27 @@ async def assess_portfolio(req: PortfolioRequest):
         "zone_breakdown": {
             zone: {"count": count, "name": BEC_ZONE_NAMES.get(zone, zone)}
             for zone, count in sorted(zone_counts.items(), key=lambda x: -x[1])
+        },
+        "total_estimated_annual_loss_cad": round(
+            sum(r.get("estimated_annual_loss_cad", 0) for r in results if "error" not in r), 2
+        ) if total_value > 0 else None,
+        "methodology": {
+            "grid_resolution_km": 5,
+            "model_auc": 0.974,
+            "data_sources": 21,
+            "fire_history_records": 225000,
+            "fire_history_years": "1919-2025",
+            "update_frequency": "daily at 2 PM PT",
+            "loss_estimate_note": (
+                "Indicative screening estimate only. "
+                "Loss = insured_value x composite_risk x severity_factor x fire_season_fraction. "
+                "Not actuarially certified. Use for portfolio screening, not pricing."
+            ),
+            "resolution_note": (
+                "5km grid resolution. Suitable for area-level screening. "
+                "Two properties within the same 5km cell receive identical scores. "
+                "Not a substitute for property-level assessment."
+            ),
         },
     }
 

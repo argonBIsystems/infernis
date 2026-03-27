@@ -160,10 +160,35 @@ INFERNIS uses 21 open data sources with zero proprietary dependencies:
 
 ---
 
+## Resolution & Use Case Guidance
+
+INFERNIS operates at 5km grid resolution. Two properties 3km apart receive the same risk score. This has implications for how the data should be used:
+
+### Appropriate uses (area-level screening):
+- Portfolio triage: flag which policies are in high-risk zones
+- Regional risk assessment: compare exposure across BEC zones
+- Trend monitoring: track how risk changes day-to-day and season-to-season
+- Regulatory reporting: aggregate wildfire exposure metrics
+
+### Not appropriate (property-level precision):
+- Individual premium pricing based solely on INFERNIS score
+- Distinguishing between two properties in the same 5km cell
+- Evaluating defensible space, roof materials, or lot-level vegetation
+- Replacing on-site inspections for high-value properties
+
+### Recommended workflow for underwriting:
+1. Use INFERNIS portfolio endpoint to screen all policies by composite risk
+2. Flag properties with composite > 0.5 (HIGH+) for detailed review
+3. For flagged properties, conduct site-specific assessment
+4. Use INFERNIS seasonal risk curve to time inspections (peak fire season)
+
+---
+
 ## Limitations
 
-- **5km resolution** — risk is per grid cell, not per individual property. Two houses 3km apart get the same score. For property-level assessment, this is area-level screening, not structure-level evaluation.
-- **Ignition prediction, not damage** — the model predicts probability of a fire starting, not expected losses. Loss modeling requires structure vulnerability data.
+- **5km resolution** — risk is per grid cell, not per individual property. See "Resolution & Use Case Guidance" above.
+- **Ignition prediction, not damage** — the model predicts probability of a fire starting, not expected losses. The insurance portfolio endpoint provides an indicative estimated annual loss, but this is a screening metric, not actuarial pricing.
 - **BC only** — no coverage outside British Columbia. The engine is province-agnostic but grid generation and data pipelines are BC-configured.
 - **Daily updates** — predictions refresh once daily at 2 PM PT. Intra-day conditions are not captured.
 - **Historical fire data quality** — older CNFDB records (pre-1960) have less precise coordinates and incomplete cause attribution.
+- **Susceptibility fallback** — cells with zero fires in 10 years use their BEC zone average, dampened to 50%. This may still overestimate urban areas within fire-prone zones.

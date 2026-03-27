@@ -178,17 +178,35 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("Pipeline scheduler disabled (set INFERNIS_PIPELINE_ENABLED=true to enable)")
 
-    # Run initial pipeline on startup (non-blocking) — disabled by default
-    # to avoid OOM in memory-constrained containers
-    if settings.pipeline_enabled and settings.pipeline_run_on_startup:
+    # Smart startup: run predictions (no forecast) if data is stale (>24h)
+    if settings.pipeline_enabled and run_time:
         try:
-            import threading
+            from datetime import datetime as _dt, timedelta as _td
 
-            threading.Thread(target=_run_scheduled_pipeline, daemon=True).start()
-            logger.info("Initial pipeline run triggered in background")
+            last_dt = _dt.fromisoformat(str(run_time))
+            age_hours = (_dt.utcnow() - last_dt).total_seconds() / 3600
+            if age_hours > 24:
+                logger.info(
+                    "Predictions stale (%.0fh old) — running daily pipeline (no forecast)",
+                    age_hours,
+                )
+                import threading
+
+                def _startup_pipeline():
+                    try:
+                        original_fc = settings.forecast_enabled
+                        settings.forecast_enabled = False
+                        _run_scheduled_pipeline()
+                        settings.forecast_enabled = original_fc
+                    except Exception as exc:
+                        logger.warning("Startup pipeline failed: %s", exc)
+
+                threading.Thread(target=_startup_pipeline, daemon=True).start()
+            else:
+                logger.info("Predictions fresh (%.0fh old) — no startup pipeline needed", age_hours)
         except Exception as e:
-            logger.warning("Initial pipeline run failed: %s", e)
-    else:
+            logger.info("Could not check prediction freshness: %s", e)
+    elif settings.pipeline_enabled:
         logger.info(
             "Startup pipeline run disabled (set INFERNIS_PIPELINE_RUN_ON_STARTUP=true to enable)"
         )
