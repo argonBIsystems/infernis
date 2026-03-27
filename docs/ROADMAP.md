@@ -47,31 +47,28 @@ This roadmap outlines planned features for INFERNIS. Priorities may shift based 
 - [x] **Anomaly & trend detection** — `GET /v1/trends/{lat}/{lon}` comparing current risk vs historical susceptibility baseline; departure %, anomaly status (NEAR_NORMAL through RECORD_HIGH), 3-day and 7-day velocity
 - [x] **MCP Server** — auto-generated from OpenAPI spec via fastapi-mcp; all INFERNIS endpoints exposed as tools for Claude, ChatGPT, Cursor, Copilot; mounted at `/mcp`
 
+### Insurance Vertical
+- [x] **Insurance portfolio endpoint** — `POST /v1/insurance/portfolio` bulk assess up to 1,000 properties; per-property risk + composite + susceptibility + historical fires + seasonal risk + SHAP drivers; portfolio aggregate with risk distribution, value-at-risk by tier, zone breakdown
+- [x] **Seasonal risk curve** — monthly fire frequency index (0-1) by BEC zone on `/v1/risk/profile`; shows fire season window, peak month, and month-by-month risk pattern
+
 ### Infrastructure
 - [x] NaN/Inf sanitization across all API endpoints (fixed Victoria 500 errors for coastal edge cells)
 - [x] `--quantile` flag in training script for confidence interval model generation
 - [x] Alembic migration 006: `shap_values` JSONB column on predictions table
 - [x] Coarse weather grid (1,512 points at ~50km) with KDTree interpolation to 84K prediction cells — eliminates Open-Meteo rate limiting (6 batches vs 282)
 - [x] XGBoost native `pred_contribs` for SHAP (replaces shap library C-extension crash)
+- [x] On-demand Redis reads (eliminated ~2 GB in-memory cache at startup)
+- [x] PyTorch/shap/cfgrib removed from runtime deps (saves ~500 MB RAM)
+- [x] Cloudflare cache-control headers (1h CDN, 5m browser)
+- [x] Memory limits: 8 GB / 2 vCPU (was unlimited)
+- [x] Cached 5km + 1km grid parquets (skip GEE topography on restart)
+- [x] Chunked forecast pipeline (20K cells at a time, streams to Redis per-day)
+- [x] ArSite health spec v1.0 on `/health`
+- [x] `docs/HOW_IT_WORKS.md` — comprehensive technical documentation
 
 ---
 
 ## Next Up
-
-### Insurance Vertical
-**Status:** Planned
-**Impact:** Direct path to underwriting integration
-
-Purpose-built endpoints for wildfire exposure assessment:
-
-```
-POST /v1/insurance/portfolio   — Bulk risk assessment for up to 1,000 properties
-GET  /v1/insurance/property/{lat}/{lon}  — Deep-dive single property report
-```
-
-Portfolio endpoint returns per-property risk scores, BEC zone fire regime classification, historical fire proximity (CNFDB), forecast outlook, top risk drivers (SHAP), and aggregate portfolio metrics (`value_at_risk_high`, risk distribution). The property endpoint adds 90-day risk history, 10-year fire proximity timeline, and seasonal risk profile.
-
-No API-accessible, BC-specific wildfire underwriting tool exists. ZestyAI and CAPE Analytics are enterprise-only, proprietary, and US-focused.
 
 ### Utility Corridor Risk
 **Status:** Planned
