@@ -71,8 +71,8 @@ async def get_trends(
     """
     from infernis.api.routes import (
         _find_nearest_cell,
+        _get_prediction,
         _grid_cells,
-        _predictions_cache,
         _safe_float,
         _validate_bc_coords,
     )
@@ -83,7 +83,7 @@ async def get_trends(
     if cell_id is None:
         raise HTTPException(status_code=404, detail="No grid cell found for this location.")
 
-    pred = _predictions_cache.get(cell_id)
+    pred = _get_prediction(cell_id)
     if pred is None:
         raise HTTPException(status_code=503, detail="Predictions not yet available.")
 
@@ -91,9 +91,9 @@ async def get_trends(
     cell = _grid_cells.get(cell_id, {})
 
     # Get historical baseline from fire statistics
-    from infernis.api.profile_routes import _fire_stats_cache
+    from infernis.api.profile_routes import _get_fire_stats
 
-    stats = _fire_stats_cache.get(cell_id, {})
+    stats = _get_fire_stats(cell_id) or {}
     susceptibility_score = _safe(stats.get("susceptibility_score", 0.0))
     susceptibility_percentile = stats.get("susceptibility_percentile", 50)
     susceptibility_label = stats.get("susceptibility_label", "AVERAGE")

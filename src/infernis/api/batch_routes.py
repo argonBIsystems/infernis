@@ -69,17 +69,20 @@ async def batch_risk(req: BatchRequest):
 
     Maximum 50 locations per request. Counts as 1 API call regardless of batch size.
     """
-    if not _routes._predictions_cache:
+    if not _routes._has_predictions():
         raise HTTPException(status_code=503, detail="Predictions not yet available.")
 
     results = []
     for loc in req.locations:
         cell_id = _routes._find_nearest_cell(loc.lat, loc.lon)
-        if cell_id is None or cell_id not in _routes._predictions_cache:
+        if cell_id is None:
             results.append({"lat": loc.lat, "lon": loc.lon, "error": "No data for this location"})
             continue
 
-        pred = _routes._predictions_cache[cell_id]
+        pred = _routes._get_prediction(cell_id)
+        if pred is None:
+            results.append({"lat": loc.lat, "lon": loc.lon, "error": "No data for this location"})
+            continue
         cell = _routes._grid_cells.get(cell_id, {})
         score = _routes._safe_float(pred.get("score"), 0.0)
         level = DangerLevel.from_score(score)

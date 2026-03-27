@@ -129,7 +129,6 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
                 db.close()
         except Exception as e:
             logger.error("API key lookup failed: %s", e)
-            # Fail open in case DB is unavailable - allow request
             return {
                 "id": 0,
                 "daily_limit": settings.daily_rate_limit,

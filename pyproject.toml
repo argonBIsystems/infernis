@@ -32,17 +32,20 @@ dependencies = [
     "python-dotenv>=1.0",
     "pyarrow>=14.0",
     "Pillow>=10.0",
-    "torch>=2.0",
     "sentry-sdk[fastapi]>=2.0",
-    "cfgrib>=0.9.10",
     "cffdrs @ git+https://github.com/nrcan-cfs-fire/cffdrs_py.git",
-    "shap>=0.45.1",
+    # torch, shap, cfgrib moved to optional [training] — not needed at runtime
     "fastapi-mcp>=0.4",
 ]
 
 [project.optional-dependencies]
 dashboard = [
     "firebase-admin>=6.0",
+]
+training = [
+    "torch>=2.0",
+    "shap>=0.45.1",
+    "cfgrib>=0.9.10",
 ]
 dev = [
     "pytest>=8.0",

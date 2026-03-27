@@ -56,6 +56,28 @@ if settings.sentry_dsn:
         logger.warning("sentry-sdk not installed, error tracking disabled")
 
 
+class CacheControlMiddleware(BaseHTTPMiddleware):
+    """Add Cache-Control headers for Cloudflare edge caching.
+
+    Data updates once daily at 2 PM PT. GET responses on /v1/ endpoints
+    are cached for 1 hour at Cloudflare's edge — repeat requests from the
+    same region never hit Railway.
+    """
+
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        path = request.url.path
+        if (
+            request.method == "GET"
+            and path.startswith("/v1/")
+            and response.status_code == 200
+        ):
+            # Cache successful GET responses for 1 hour at CDN, 5 min in browser
+            response.headers["Cache-Control"] = "public, s-maxage=3600, max-age=300"
+            response.headers["CDN-Cache-Control"] = "public, max-age=3600"
+        return response
+
+
 class DemoCORSMiddleware(BaseHTTPMiddleware):
     """Add permissive CORS for demo and tile endpoints so browser JS apps work."""
 
@@ -86,48 +108,40 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Firebase initialization skipped: %s", e)
 
-    # Load cached predictions from Redis (survive deploys without re-running pipeline)
+    # Load grid cells (small, needed for KDTree) and metadata from Redis.
+    # Predictions and forecasts are read on-demand from Redis per request
+    # to save ~2 GB RAM that was previously used for in-memory caches.
     try:
-        from infernis.services.cache import (
-            load_forecasts_from_redis,
-            load_grid_cells_from_redis,
-            load_predictions_from_redis,
-        )
+        from infernis.services.cache import get_redis, load_grid_cells_from_redis
 
-        predictions, run_time = load_predictions_from_redis()
         grid_cells = load_grid_cells_from_redis()
+        r = get_redis()
+        run_time = r.get("pred:last_run") if r else None
+        if isinstance(run_time, bytes):
+            run_time = run_time.decode()
 
-        if predictions and grid_cells:
+        if grid_cells:
             from infernis.api.routes import set_predictions_cache
 
-            set_predictions_cache(predictions, grid_cells, run_time)
+            # Pass empty predictions — grid cells + KDTree only (~8 MB)
+            set_predictions_cache({}, grid_cells, run_time or "")
             logger.info(
-                "Loaded %d predictions + %d grid cells from Redis (last run: %s) — API ready",
-                len(predictions),
+                "Loaded %d grid cells from Redis (predictions served on-demand from Redis)",
                 len(grid_cells),
-                run_time,
             )
-        elif predictions:
-            logger.warning("Predictions in Redis but no grid cells — API will wait for pipeline")
         else:
-            logger.info("Redis cache empty — API will be available after first pipeline run")
+            logger.info("No grid cells in Redis — API will be available after first pipeline run")
 
-        forecasts, base_date = load_forecasts_from_redis()
-        if forecasts:
-            from infernis.api.routes import set_forecast_cache
+        if run_time:
+            from infernis.api.routes import _forecast_cache
 
-            set_forecast_cache(forecasts, base_date)
-            logger.info("Loaded %d forecast cells from Redis (base: %s)", len(forecasts), base_date)
+            _forecast_cache.clear()  # forecasts also read on-demand
+            logger.info("Pipeline last run: %s (forecasts served on-demand)", run_time)
 
         try:
-            from infernis.services.cache import load_fire_stats_from_redis
-
-            fire_stats = load_fire_stats_from_redis()
-            if fire_stats:
-                from infernis.api.profile_routes import set_fire_stats_cache
-
-                set_fire_stats_cache(fire_stats)
-                logger.info("Loaded %d fire stat cells from Redis", len(fire_stats))
+            # Fire stats are read on-demand from Redis per request
+            # (via _get_fire_stats in profile_routes) — no preload needed.
+            logger.info("Fire stats served on-demand from Redis (no preload)")
         except Exception as e:
             logger.warning("Fire stats cache restore skipped: %s", e)
     except Exception as e:
@@ -252,6 +266,7 @@ app.add_middleware(
 # API key auth (skipped in debug mode)
 app.add_middleware(APIKeyMiddleware)
 app.add_middleware(DemoCORSMiddleware)
+app.add_middleware(CacheControlMiddleware)
 
 app.include_router(profile_router)  # BEFORE router — profile must match before {lat}/{lon}
 app.include_router(router)

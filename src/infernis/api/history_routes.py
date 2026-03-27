@@ -71,9 +71,9 @@ async def get_risk_history(
     if not (settings.bc_bbox_west <= lon <= settings.bc_bbox_east):
         raise HTTPException(status_code=422, detail=f"Longitude {lon} outside BC boundaries.")
 
-    from infernis.api.routes import _find_nearest_cell, _predictions_cache
+    from infernis.api.routes import _find_nearest_cell, _has_predictions
 
-    if not _predictions_cache:
+    if not _has_predictions():
         raise HTTPException(status_code=503, detail="Predictions not yet available.")
 
     cell_id = _find_nearest_cell(lat, lon)

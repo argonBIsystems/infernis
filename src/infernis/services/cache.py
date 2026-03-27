@@ -55,7 +55,7 @@ def cache_predictions(predictions: dict, run_date: str, ttl_seconds: int = 17280
         pipe = r.pipeline()
         for cell_id, pred in batch:
             value = json.dumps(pred)
-            pipe.setex(f"pred:{run_date}:{cell_id}", ttl_seconds, value)
+            # Only store latest — dated copies are redundant (history reads from DB)
             pipe.setex(f"pred:latest:{cell_id}", ttl_seconds, value)
             count += 1
         pipe.execute()

@@ -165,20 +165,20 @@ async def explain_point(
     """
     _validate_bc_coords(lat, lon)
 
-    if not _routes_module._predictions_cache:
+    if not _routes_module._has_predictions():
         raise HTTPException(
             status_code=503,
             detail="Predictions not yet available. Pipeline may be initializing.",
         )
 
     cell_id = _find_nearest_cell(lat, lon)
-    if cell_id is None or cell_id not in _routes_module._predictions_cache:
+    if cell_id is None or _routes_module._get_prediction(cell_id) is None:
         raise HTTPException(
             status_code=503,
             detail="No prediction data for this location.",
         )
 
-    pred = _routes_module._predictions_cache[cell_id]
+    pred = _routes_module._get_prediction(cell_id)
     shap_values = pred.get("shap_values")
     feature_values = _build_feature_values(pred)
 
@@ -232,7 +232,7 @@ async def explain_zones(
     Returns a list of zones, each with bec_zone, cell_count, and a ranked
     list of top_drivers with mean absolute SHAP contribution.
     """
-    if not _routes_module._predictions_cache:
+    if not _routes_module._has_predictions():
         raise HTTPException(
             status_code=503,
             detail="Predictions not yet available.",
@@ -242,7 +242,26 @@ async def explain_zones(
     # zone_data: { bec_zone: { feature: [abs_shap, ...], cell_count: int } }
     zone_data: dict[str, dict] = {}
 
-    for cell_id, pred in _routes_module._predictions_cache.items():
+    # Batch-fetch predictions from Redis for zone aggregation
+    import json as _json
+
+    from infernis.services.cache import get_redis as _get_redis
+
+    _r = _get_redis()
+    _all_preds = {}
+    if _r:
+        _cids = list(_routes_module._grid_cells.keys())
+        for _i in range(0, len(_cids), 5000):
+            _batch = _cids[_i : _i + 5000]
+            _pipe = _r.pipeline()
+            for _cid in _batch:
+                _pipe.get(f"pred:latest:{_cid}")
+            _vals = _pipe.execute()
+            for _cid, _v in zip(_batch, _vals):
+                if _v:
+                    _all_preds[_cid] = _json.loads(_v)
+
+    for cell_id, pred in _all_preds.items():
         cell = _routes_module._grid_cells.get(cell_id, {})
         zone = cell.get("bec_zone") or "UNKNOWN"
         shap_values = pred.get("shap_values")

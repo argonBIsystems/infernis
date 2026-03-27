@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 import logging
 import math
 from datetime import datetime, timezone
@@ -43,17 +44,63 @@ def _safe_float(val, default=0.0):
         return default
 
 
-# In-memory store for the latest predictions (populated by pipeline)
-# In production this reads from Redis/PostGIS
-_predictions_cache: dict = {}
+# Grid cells + KDTree are kept in memory (small: ~8 MB for 84K cells).
+# Predictions and forecasts are read from Redis on-demand to save RAM.
 _grid_cells: dict = {}
 _last_pipeline_run: str | None = None
 _kdtree = None
 _cell_ids_ordered: list = []
-
-# Forecast cache: cell_id → list of forecast day dicts
-_forecast_cache: dict[str, list[dict]] = {}
 _forecast_base_date: str | None = None
+
+# Thin compatibility layer — endpoints that used _predictions_cache now
+# call _get_prediction(cell_id) which reads from Redis.
+_predictions_cache: dict = {}  # only populated during pipeline run, cleared after
+_forecast_cache: dict[str, list[dict]] = {}  # same
+
+
+def _get_prediction(cell_id: str) -> dict | None:
+    """Fetch a single cell's prediction from Redis (on-demand, no preload)."""
+    try:
+        from infernis.services.cache import get_redis
+
+        r = get_redis()
+        if r is None:
+            return _predictions_cache.get(cell_id)
+        val = r.get(f"pred:latest:{cell_id}")
+        if val:
+            return json.loads(val)
+        return _predictions_cache.get(cell_id)
+    except Exception:
+        return _predictions_cache.get(cell_id)
+
+
+def _get_forecast(cell_id: str) -> list[dict] | None:
+    """Fetch a single cell's forecast from Redis (on-demand)."""
+    try:
+        from infernis.services.cache import get_redis
+
+        r = get_redis()
+        if r is None:
+            return _forecast_cache.get(cell_id)
+        val = r.get(f"forecast:latest:{cell_id}")
+        if val:
+            return json.loads(val)
+        return _forecast_cache.get(cell_id)
+    except Exception:
+        return _forecast_cache.get(cell_id)
+
+
+def _has_predictions() -> bool:
+    """Check if predictions are available (in cache or Redis)."""
+    if _predictions_cache:
+        return True
+    try:
+        from infernis.services.cache import get_redis
+
+        r = get_redis()
+        return r is not None and r.exists("pred:last_run")
+    except Exception:
+        return False
 
 
 def set_predictions_cache(predictions: dict, grid_cells: dict, run_time: str):
@@ -126,12 +173,14 @@ async def get_risk(lat: float, lon: float):
     _validate_bc_coords(lat, lon)
 
     cell_id = _find_nearest_cell(lat, lon)
-    if cell_id is None or cell_id not in _predictions_cache:
+    if cell_id is None:
         raise HTTPException(
             status_code=503, detail="Predictions not yet available. Pipeline may be initializing."
         )
 
-    pred = _predictions_cache[cell_id]
+    pred = _get_prediction(cell_id)
+    if pred is None:
+        raise HTTPException(status_code=503, detail="Predictions not yet available.")
     cell = _grid_cells.get(cell_id, {})
 
     score = _safe_float(pred.get("score"), 0.0)
@@ -246,16 +295,17 @@ async def get_forecast(
     """
     _validate_bc_coords(lat, lon)
 
-    if not _forecast_cache:
+    cell_id = _find_nearest_cell(lat, lon)
+    if cell_id is None:
+        raise HTTPException(status_code=404, detail="No forecast data for this location.")
+
+    fc = _get_forecast(cell_id)
+    if not fc:
         raise HTTPException(
             status_code=503, detail="Forecast not yet available. Pipeline may be initializing."
         )
 
-    cell_id = _find_nearest_cell(lat, lon)
-    if cell_id is None or cell_id not in _forecast_cache:
-        raise HTTPException(status_code=404, detail="No forecast data for this location.")
-
-    forecast_days = _forecast_cache[cell_id][:days]
+    forecast_days = fc[:days]
 
     return ForecastResponse(
         latitude=lat,
@@ -302,11 +352,31 @@ async def get_risk_zones():
     - News media fire risk summary
     - Identifying which ecological zones are most at risk today
     """
-    if not _predictions_cache:
+    if not _has_predictions():
         raise HTTPException(status_code=503, detail="Predictions not yet available.")
 
+    # Aggregate by BEC zone — fetch scores from Redis in batches
+    from infernis.services.cache import get_redis
+
+    r = get_redis()
     zones: dict = {}
-    for cell_id, pred in _predictions_cache.items():
+
+    # Batch fetch all predictions from Redis using pipeline
+    cell_ids_list = list(_grid_cells.keys())
+    all_preds = {}
+    if r:
+        BATCH = 5000
+        for i in range(0, len(cell_ids_list), BATCH):
+            batch_ids = cell_ids_list[i : i + BATCH]
+            pipe = r.pipeline()
+            for cid in batch_ids:
+                pipe.get(f"pred:latest:{cid}")
+            values = pipe.execute()
+            for cid, val in zip(batch_ids, values):
+                if val:
+                    all_preds[cid] = json.loads(val)
+
+    for cell_id, pred in all_preds.items():
         cell = _grid_cells.get(cell_id, {})
         zone = cell.get("bec_zone", "UNKNOWN")
         if zone not in zones:
@@ -342,10 +412,12 @@ async def get_fwi(lat: float, lon: float):
     _validate_bc_coords(lat, lon)
 
     cell_id = _find_nearest_cell(lat, lon)
-    if cell_id is None or cell_id not in _predictions_cache:
+    if cell_id is None:
         raise HTTPException(status_code=503, detail="Predictions not yet available.")
 
-    pred = _predictions_cache[cell_id]
+    pred = _get_prediction(cell_id)
+    if pred is None:
+        raise HTTPException(status_code=503, detail="Predictions not yet available.")
     return {
         "location": {"lat": lat, "lon": lon},
         "grid_cell_id": cell_id,
@@ -367,10 +439,12 @@ async def get_conditions(lat: float, lon: float):
     _validate_bc_coords(lat, lon)
 
     cell_id = _find_nearest_cell(lat, lon)
-    if cell_id is None or cell_id not in _predictions_cache:
+    if cell_id is None:
         raise HTTPException(status_code=503, detail="Predictions not yet available.")
 
-    pred = _predictions_cache[cell_id]
+    pred = _get_prediction(cell_id)
+    if pred is None:
+        raise HTTPException(status_code=503, detail="Predictions not yet available.")
     return {
         "location": {"lat": lat, "lon": lon},
         "grid_cell_id": cell_id,
@@ -400,13 +474,15 @@ async def get_status():
     - Automated uptime monitoring (e.g., Uptime Robot, Pingdom)
     - Verifying the pipeline ran today before using predictions
     """
+    # Check if predictions are available (in Redis, not in-memory cache)
+    has_preds = _has_predictions()
     return StatusResponse(
-        status="operational" if _predictions_cache else "initializing",
+        status="operational" if has_preds else "initializing",
         version=settings.app_version,
         last_pipeline_run=_last_pipeline_run,
         model_version="fire_core_v1",
         grid_cells=len(_grid_cells),
-        pipeline_healthy=bool(_predictions_cache),
+        pipeline_healthy=has_preds,
     )
 
 
@@ -454,7 +530,7 @@ async def get_risk_grid(
     GET /v1/risk/grid?bbox=49.0,-120.5,50.5,-119.0
     ```
     """
-    if not _predictions_cache:
+    if not _has_predictions():
         raise HTTPException(status_code=503, detail="Predictions not yet available.")
 
     try:
@@ -473,7 +549,7 @@ async def get_risk_grid(
         if not (south <= lat <= north and west <= lon <= east):
             continue
 
-        pred = _predictions_cache.get(cell_id)
+        pred = _get_prediction(cell_id)
         if pred is None:
             continue
 
@@ -535,7 +611,7 @@ async def get_risk_heatmap(
     colormap: str = Query("risk", description="Color map: risk, grayscale"),
 ):
     """Returns a PNG heatmap image of fire risk scores for the given bounding box."""
-    if not _predictions_cache:
+    if not _has_predictions():
         raise HTTPException(status_code=503, detail="Predictions not yet available.")
 
     try:
@@ -560,7 +636,7 @@ async def get_risk_heatmap(
         if not (south <= lat <= north and west <= lon <= east):
             continue
 
-        pred = _predictions_cache.get(cell_id)
+        pred = _get_prediction(cell_id)
         if pred is None:
             continue
 

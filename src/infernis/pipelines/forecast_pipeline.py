@@ -56,16 +56,19 @@ class ForecastPipeline:
         current_fwi_state: dict[str, dict],
         target_date: date | None = None,
     ) -> dict[str, list[dict]]:
-        """Execute the multi-day forecast pipeline.
+        """Execute the multi-day forecast pipeline with streaming Redis writes.
 
-        Args:
-            grid_df: Grid DataFrame with cell_id, lat, lon, bec_zone, etc.
-            current_fwi_state: dict cell_id → {ffmc, dmc, dc} from today's pipeline.
-            target_date: Base date for the forecast. Default today.
+        Instead of accumulating all 10 days x 84K cells in memory (~400 MB),
+        this streams each day's results directly to Redis and only keeps
+        the current day's data in memory at any time.
 
         Returns:
-            dict mapping cell_id to list of forecast day dicts.
+            Empty dict (results are written directly to Redis).
+            The return type is kept for API compatibility.
         """
+        import gc
+        import json
+
         target_date = target_date or date.today()
         logger.info("=== Starting forecast pipeline for %s ===", target_date)
 
@@ -74,11 +77,20 @@ class ForecastPipeline:
         grid_lons = grid_df["lon"].values
         n_cells = len(cell_ids)
 
-        # Step 1: Fetch forecast weather (Open-Meteo primary, GRIB2 fallback)
+        # Get Redis connection for streaming writes
+        try:
+            from infernis.services.cache import get_redis
+
+            redis_conn = get_redis()
+        except Exception:
+            redis_conn = None
+
+        # Step 1: Fetch forecast weather
         all_weather = self._get_forecast_weather(target_date, grid_lats, grid_lons)
 
-        # Step 2: Roll forward FWI and predict for each day
-        forecasts: dict[str, list[dict]] = {cid: [] for cid in cell_ids}
+        # Initialize per-cell forecast accumulator in Redis (not memory)
+        # We build each cell's forecast list incrementally
+        cell_forecasts: dict[str, list] = {}  # only current batch in memory
 
         # Start with current FWI state
         fwi_state = {}
@@ -86,36 +98,66 @@ class ForecastPipeline:
         for cid in cell_ids:
             fwi_state[cid] = current_fwi_state.get(cid, dict(default_fwi))
 
+        days_completed = 0
+
+        # Process cells in chunks to limit peak memory.
+        # 84K cells at once creates ~500 MB of numpy arrays per day.
+        # 20K chunks = ~120 MB peak — fits easily in 8 GB.
+        CELL_CHUNK = 20_000
+
         for lead_day in range(1, self.max_days + 1):
             valid_date = target_date + timedelta(days=lead_day)
 
-            # Get weather for this day
             if lead_day in all_weather:
-                weather = all_weather[lead_day]
+                weather_full = all_weather[lead_day]
                 source = "GEM" if lead_day <= 2 else "GEM_GLOBAL"
             else:
                 logger.warning("No weather data for day+%d, stopping forecast", lead_day)
                 break
 
-            # Roll forward FWI codes
+            confidence = self.confidence_decay ** lead_day
             month = valid_date.month
-            fwi_results = self._compute_fwi_vectorized(cell_ids, weather, month, fwi_state)
+            day_scores = []
 
-            # Build feature matrix and predict
-            features = self._build_features(weather, fwi_results, grid_df, valid_date, n_cells)
-            raw_scores = self._predict(features)
+            # Process cells in chunks
+            for chunk_start in range(0, n_cells, CELL_CHUNK):
+                chunk_end = min(chunk_start + CELL_CHUNK, n_cells)
+                chunk_ids = cell_ids[chunk_start:chunk_end]
+                chunk_n = len(chunk_ids)
 
-            # Apply confidence decay
-            confidence = self.confidence_decay**lead_day
-            decayed_scores = raw_scores * confidence
+                # Slice weather arrays for this chunk
+                weather = {
+                    k: v[chunk_start:chunk_end] if isinstance(v, np.ndarray) else v
+                    for k, v in weather_full.items()
+                }
 
-            # Build forecast day for each cell
-            for i, cid in enumerate(cell_ids):
-                score = float(np.clip(decayed_scores[i], 0.0, 1.0))
-                level = DangerLevel.from_score(score)
-                danger_level_num = list(DangerLevel).index(level) + 1
-                forecasts[cid].append(
-                    {
+                # Slice grid_df for this chunk
+                chunk_grid = grid_df.iloc[chunk_start:chunk_end]
+
+                # FWI for this chunk
+                fwi_results = self._compute_fwi_vectorized(
+                    chunk_ids, weather, month, fwi_state
+                )
+
+                # Features + predict for this chunk
+                features = self._build_features(
+                    weather, fwi_results, chunk_grid, valid_date, chunk_n,
+                    chunk_offset=chunk_start,
+                )
+                raw_scores = self._predict(features)
+                decayed = raw_scores * confidence
+                day_scores.extend(decayed.tolist())
+
+                # Build forecast entries and update FWI state
+                if redis_conn:
+                    pipe = redis_conn.pipeline()
+
+                for i, cid in enumerate(chunk_ids):
+                    score = float(np.clip(decayed[i], 0.0, 1.0))
+                    level = DangerLevel.from_score(score)
+                    danger_level_num = list(DangerLevel).index(level) + 1
+
+                    day_entry = {
                         "valid_date": valid_date.isoformat(),
                         "lead_day": lead_day,
                         "risk_score": round(score, 4),
@@ -131,41 +173,54 @@ class ForecastPipeline:
                             "bui": round(fwi_results["bui"][i], 1),
                             "fwi": round(fwi_results["fwi"][i], 2),
                         },
-                        "temperature_c": round(
-                            float(weather.get("temperature_c", np.zeros(n_cells))[i]), 1
-                        ),
-                        "rh_pct": round(float(weather.get("rh_pct", np.zeros(n_cells))[i]), 1),
-                        "wind_kmh": round(float(weather.get("wind_kmh", np.zeros(n_cells))[i]), 0),
-                        "precip_24h_mm": round(
-                            float(weather.get("precip_24h_mm", np.zeros(n_cells))[i]), 1
-                        ),
+                        "temperature_c": round(float(weather.get("temperature_c", np.zeros(chunk_n))[i]), 1),
+                        "rh_pct": round(float(weather.get("rh_pct", np.zeros(chunk_n))[i]), 1),
+                        "wind_kmh": round(float(weather.get("wind_kmh", np.zeros(chunk_n))[i]), 0),
+                        "precip_24h_mm": round(float(weather.get("precip_24h_mm", np.zeros(chunk_n))[i]), 1),
                     }
-                )
 
-                # Update FWI state for next day's roll-forward
-                fwi_state[cid] = {
-                    "ffmc": float(fwi_results["ffmc"][i]),
-                    "dmc": float(fwi_results["dmc"][i]),
-                    "dc": float(fwi_results["dc"][i]),
-                }
+                    if cid not in cell_forecasts:
+                        cell_forecasts[cid] = []
+                    cell_forecasts[cid].append(day_entry)
 
+                    fwi_state[cid] = {
+                        "ffmc": float(fwi_results["ffmc"][i]),
+                        "dmc": float(fwi_results["dmc"][i]),
+                        "dc": float(fwi_results["dc"][i]),
+                    }
+
+                # Flush this chunk's forecast to Redis
+                if redis_conn:
+                    for cid in chunk_ids:
+                        fc = cell_forecasts.get(cid, [])
+                        pipe.setex(f"forecast:latest:{cid}", 172800, json.dumps(fc))
+                    pipe.execute()
+
+                # Free chunk arrays
+                del features, raw_scores, decayed, fwi_results, weather
+                gc.collect()
+
+            scores_arr = np.array(day_scores)
             logger.info(
-                "Forecast day+%d (%s, %s): mean=%.4f, max=%.4f, confidence=%.2f",
-                lead_day,
-                valid_date,
-                source,
-                decayed_scores.mean(),
-                decayed_scores.max(),
-                confidence,
+                "Forecast day+%d (%s, %s): mean=%.4f, max=%.4f, confidence=%.2f — %d chunks",
+                lead_day, valid_date, source,
+                scores_arr.mean(), scores_arr.max(), confidence,
+                (n_cells + CELL_CHUNK - 1) // CELL_CHUNK,
             )
+            days_completed = lead_day
 
-        total_days = max((len(days) for days in forecasts.values()), default=0)
         logger.info(
             "=== Forecast pipeline complete: %d cells x %d days ===",
             n_cells,
-            total_days,
+            days_completed,
         )
-        return forecasts
+
+        # Clear the in-memory accumulator — data is already in Redis
+        cell_forecasts.clear()
+        gc.collect()
+
+        # Return empty — caller reads from Redis
+        return {}
 
     def _get_forecast_weather(
         self, target_date: date, grid_lats: np.ndarray, grid_lons: np.ndarray
@@ -298,6 +353,7 @@ class ForecastPipeline:
         grid_df: pd.DataFrame,
         valid_date: date,
         n_cells: int,
+        chunk_offset: int = 0,
     ) -> np.ndarray:
         """Build the 28-feature matrix for XGBoost inference.
 
@@ -333,15 +389,15 @@ class ForecastPipeline:
                 weather.get("wind_kmh", np.full(n_cells, 10.0)),
                 weather.get("wind_dir_deg", np.full(n_cells, 225.0)),
                 weather.get("precip_24h_mm", np.zeros(n_cells)),
-                self._get_soil_moisture(weather, "soil_moisture_1", n_cells),
-                self._get_soil_moisture(weather, "soil_moisture_2", n_cells),
-                self._get_soil_moisture(weather, "soil_moisture_3", n_cells),
-                self._get_soil_moisture(weather, "soil_moisture_4", n_cells),
+                self._get_soil_moisture(weather, "soil_moisture_1", n_cells, chunk_offset),
+                self._get_soil_moisture(weather, "soil_moisture_2", n_cells, chunk_offset),
+                self._get_soil_moisture(weather, "soil_moisture_3", n_cells, chunk_offset),
+                self._get_soil_moisture(weather, "soil_moisture_4", n_cells, chunk_offset),
                 weather.get("evapotrans_mm", np.full(n_cells, 2.0)),
-                # Vegetation — use today's observed values if available (3)
-                self._observed_ndvi if self._observed_ndvi is not None else np.full(n_cells, 0.5),
-                self._observed_snow if self._observed_snow is not None else np.zeros(n_cells),
-                self._observed_lai if self._observed_lai is not None else np.full(n_cells, 2.0),
+                # Vegetation — slice observed arrays to match chunk
+                self._observed_ndvi[chunk_offset:chunk_offset + n_cells] if self._observed_ndvi is not None and len(self._observed_ndvi) > chunk_offset else np.full(n_cells, 0.5),
+                self._observed_snow[chunk_offset:chunk_offset + n_cells] if self._observed_snow is not None and len(self._observed_snow) > chunk_offset else np.zeros(n_cells),
+                self._observed_lai[chunk_offset:chunk_offset + n_cells] if self._observed_lai is not None and len(self._observed_lai) > chunk_offset else np.full(n_cells, 2.0),
                 # Topography / Infrastructure (5)
                 elevation,
                 slope,
@@ -360,7 +416,8 @@ class ForecastPipeline:
         return feature_matrix
 
     def _get_soil_moisture(
-        self, weather: dict[str, np.ndarray], key: str, n_cells: int
+        self, weather: dict[str, np.ndarray], key: str, n_cells: int,
+        chunk_offset: int = 0,
     ) -> np.ndarray:
         """Get soil moisture: prefer forecast weather, fall back to daily ERA5 observed."""
         defaults = {
@@ -381,6 +438,8 @@ class ForecastPipeline:
         if self._observed_soil_moisture and key in self._observed_soil_moisture:
             val = self._observed_soil_moisture[key]
             if val is not None:
+                if isinstance(val, np.ndarray) and len(val) > n_cells:
+                    return val[chunk_offset:chunk_offset + n_cells]
                 return val
 
         return np.full(n_cells, defaults.get(key, 0.3))

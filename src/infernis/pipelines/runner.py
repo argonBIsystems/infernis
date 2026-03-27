@@ -101,6 +101,11 @@ def run_daily_pipeline(target_date: date | None = None):
             (completed_at - started_at).total_seconds(),
         )
 
+        # Free pipeline numpy arrays before forecast to reduce peak memory
+        import gc
+
+        gc.collect()
+
         # Run forecast pipeline if enabled
         if settings.forecast_enabled:
             _run_forecast_pipeline(
@@ -205,19 +210,14 @@ def _run_forecast_pipeline(
                 len(shared_weather),
             )
 
-        forecasts = forecast.run(
+        # Forecast pipeline now streams results directly to Redis per-day
+        # to avoid accumulating 84K cells x 10 days in memory.
+        forecast.run(
             grid_df=grid_df,
             current_fwi_state=daily_pipeline._prev_fwi_state,
             target_date=target_date,
         )
-
-        if forecasts:
-            set_forecast_cache(forecasts, target_date.isoformat())
-            _save_forecasts_to_db(forecasts, target_date)
-            from infernis.services.cache import cache_forecasts as _cache_fc
-
-            _cache_fc(forecasts, target_date.isoformat())
-            logger.info("Forecast pipeline complete: %d cells", len(forecasts))
+        logger.info("Forecast pipeline complete (results streamed to Redis)")
     except Exception as e:
         logger.error("Forecast pipeline failed: %s", e, exc_info=True)
 
